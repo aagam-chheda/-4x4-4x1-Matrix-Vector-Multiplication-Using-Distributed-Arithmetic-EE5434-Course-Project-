@@ -356,20 +356,21 @@ anything in this project's Makefile -- a different Verilator install
 without `ccache` available will just call `g++` directly and build fine
 either way.
 
-**Vivado (Windows, 2024.2) is now confirmed working end-to-end:**
-`run_vivado.bat`, run against a real Vivado install (not in this
-development environment -- over the course of the same project, on the
-user's own machine), passes `REGRESSION PASSED: 11113/11113 checks
-passed`, identical to the Verilator result including the same default
-seed (that figure predates the testbench expansion to 408,425 checks --
-see "Testbench / verification" above -- which has been verified on
-Verilator but not yet re-run against Vivado or Xcelium). Getting there
-surfaced and fixed four real, simulator-specific issues (a `filelist.f`
-path-resolution bug, an `$urandom(seed)` statement-form rejection, a
-`$fatal`-doesn't-affect-exit-code quirk, and an unquoted-`-testplusarg`
-parse failure) -- see "Running in Vivado" below for the full account.
-`run_vivado.sh` (the Linux-native counterpart) carries the same fixes but
-hasn't itself been run against a real install.
+**Vivado (Windows, 2024.2) is now confirmed working end-to-end, against
+the full current suite:** `run_vivado.bat`, run against a real Vivado
+install (not in this development environment -- over the course of the
+same project, on the user's own machine), passes
+`REGRESSION PASSED: 408425/408425 checks passed`, identical to the
+Verilator result including the same default seed and pass count --
+re-confirmed after the testbench was expanded from 11,113 to 408,425
+checks (see "Testbench / verification" above), so this isn't a stale
+figure from before that expansion. Getting there surfaced and fixed four
+real, simulator-specific issues (a `filelist.f` path-resolution bug, an
+`$urandom(seed)` statement-form rejection, a `$fatal`-doesn't-affect-
+exit-code quirk, and an unquoted-`-testplusarg` parse failure) -- see
+"Running in Vivado" below for the full account. `run_vivado.sh` (the
+Linux-native counterpart) carries the same fixes but hasn't itself been
+run against a real install.
 
 **Cadence Xcelium remains the one genuinely unverified piece.** No
 Xcelium install has been available to test against (the intended one was
@@ -471,21 +472,24 @@ gitignored instead.
 `run_vivado.bat` has been run to completion against a real Vivado 2024.2
 install on Windows, via WSL for the git side and a native Windows Command
 Prompt for Vivado itself (see the note above about why: Vivado's tools
-are Windows binaries and don't run under WSL bash). Result:
-**`REGRESSION PASSED: 11113/11113 checks passed`**, all 8 cycles/both
-control paths/16 ROM addresses covered -- identical to the Verilator
-result, including reproducing the exact same default seed (`14311149`)
-and getting the exact same pass count from it, which is itself a good
-sanity check that the DPI golden model and the RTL behave identically
-under both simulators.
+are Windows binaries and don't run under WSL bash). Two confirmed runs
+over the course of this project, as the testbench grew:
 
-*(That 11,113 figure is from before the testbench was expanded with the
-exhaustive pairwise/curated-4-way sweeps and the protocol monitor --
-see "Testbench / verification" above for the current 408,425-check
-total. That expansion has been verified on Verilator but **not yet
-re-run against Vivado or Xcelium** -- do that next if you want the
-current full suite confirmed on Vivado too; the same `run_vivado.bat`
-usage applies unchanged, it'll just take a few seconds longer.)*
+- Against the original 11,113-check suite:
+  **`REGRESSION PASSED: 11113/11113 checks passed`**.
+- Against the current, expanded 408,425-check suite (see "Testbench /
+  verification" above for what was added -- the exhaustive pairwise/
+  curated-4-way sweeps and the protocol monitor):
+  **`REGRESSION PASSED: 408425/408425 checks passed`**, ~15s of actual
+  `run:` time per xsim's own reported stats.
+
+Both runs are identical to the corresponding Verilator result, including
+reproducing the exact same default seed (`14311149`) and getting the
+exact same pass count from it, which is itself a good sanity check that
+the DPI golden model and the RTL behave identically under both
+simulators, and that the expanded testbench's new categories (pairwise
+sweep, curated 4-way, protocol monitor) hold up on Vivado too, not just
+Verilator.
 
 Getting there surfaced four real, simulator-specific issues, each now
 fixed in the committed source (not worked around by disabling anything):
