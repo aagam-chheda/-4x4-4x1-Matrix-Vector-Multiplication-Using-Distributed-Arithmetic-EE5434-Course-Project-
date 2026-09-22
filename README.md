@@ -25,7 +25,7 @@ dpi/    golden_model.c      - DPI-C golden reference model (y = A*x in C)
 tb/     da_matvec_tb.sv     - self-checking testbench + scoreboard
 sim/
   verilator/Makefile        - Verilator build/run/coverage flow
-  vivado/                   - Vivado xsim batch flow (filelist + script)
+  vivado/                   - Vivado xsim batch flow (filelist + Linux/.sh and Windows/.bat scripts)
   xcelium/                  - Cadence Xcelium (xrun) batch flow (filelist + script)
 ```
 
@@ -275,10 +275,13 @@ needs to be present on another machine:
   itself requires C++20 (per Verilator's own release notes) for the code
   it generates and compiles. GCC 10+ / Clang 10+ or newer should be fine;
   verified here with GCC 15.2.0.
-- **GNU Make and a POSIX shell (bash).** The Verilator Makefile and
-  `sim/vivado/run_vivado.sh` assume Linux/macOS/WSL conventions
-  (`rm -rf`, forward-slash paths, etc.). Not adapted for native Windows
-  `cmd`/PowerShell -- use WSL there.
+- **GNU Make and a POSIX shell (bash).** The Verilator Makefile,
+  `sim/vivado/run_vivado.sh`, and `sim/xcelium/run_xcelium.sh` assume
+  Linux/macOS/WSL conventions (`rm -rf`, forward-slash paths, etc.) --
+  use WSL (or a Linux-native tool install) for those. The one exception
+  is `sim/vivado/run_vivado.bat`, a native Windows Command Prompt
+  equivalent for a Vivado install that lives on Windows itself rather
+  than inside WSL -- see "Running in Vivado" below for when to use which.
 - **`git` and `gh`** only if you want to reproduce the clone/push flow
   used to stand this repo up; not needed just to build and simulate.
 
@@ -329,18 +332,49 @@ binary:
 
 ## Running in Vivado (xsim, batch/non-project mode)
 
-```sh
-cd sim/vivado
-./run_vivado.sh
-```
+There are two entry points, and which one to use depends on *where Vivado
+is actually installed*, not where the repo happens to be checked out:
 
-This runs, in order: `xsc` (compiles `golden_model.c` to a DPI-C shared
-library), `xvlog --sv` (compiles the RTL + testbench from `filelist.f`),
-`xelab -sv_lib` (elaborates and links the DPI library), and `xsim -R`
-(batch-mode run). To override the regression's random seed under xsim,
+- **`run_vivado.sh`** -- for a Linux-native Vivado install (including one
+  installed directly inside WSL's Linux filesystem). Run from bash:
+  ```sh
+  cd sim/vivado
+  ./run_vivado.sh
+  ```
+- **`run_vivado.bat`** -- for a Vivado install on Windows itself (the
+  common case when working from WSL, since Vivado on Windows is a
+  separate install from anything inside the WSL distro, and its
+  `xvlog`/`xelab`/`xsim`/`xsc` are Windows binaries that don't run under
+  WSL bash). Run from a **native Windows shell** -- either the
+  "Vivado \<version\> Tcl Shell" shortcut Vivado's installer creates, or an
+  ordinary Command Prompt/PowerShell after running
+  `call C:\Xilinx\Vivado\<version>\settings64.bat` -- **not** from WSL
+  bash:
+  ```bat
+  cd sim\vivado
+  run_vivado.bat
+  ```
+  For this case, clone the repo directly onto the Windows filesystem
+  (e.g. `C:\Users\<you>\...`) rather than pointing the Windows Vivado
+  tools at the WSL-side checkout through `\\wsl$\...` -- that network
+  path works but is slower and occasionally flaky for heavy build I/O.
+
+Both scripts run the same sequence: `xsc` (compiles `golden_model.c` to a
+DPI-C shared library), `xvlog --sv` (compiles the RTL + testbench from
+`filelist.f`), `xelab -sv_lib` (elaborates and links the DPI library), and
+`xsim -R` (batch-mode run). To override the regression's random seed,
 pass the plusarg on the `xsim` command line (documented Xilinx xsim
 syntax; not exercised here since there's no Vivado install to test
 against): `xsim da_matvec_tb_sim -R -testplusarg SEED=1234`.
+
+**Windows-specific gotcha, on top of the general points below:** on
+Windows, `xsc` compiles DPI-C sources with a Microsoft Visual C++
+compiler (`cl.exe`), not gcc -- this needs a Visual Studio Build Tools (or
+full Visual Studio) install with the C++ workload, discoverable on `PATH`
+or via the same environment the "Vivado Tcl Shell" sets up. This is a
+different requirement from the Linux `xsc` path (which only needs gcc)
+and is the most likely first failure point if `run_vivado.bat` breaks at
+the `xsc` step.
 
 **This has not been run against a real Vivado install in this
 environment** (Vivado is not installed here) -- functional sign-off here
