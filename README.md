@@ -383,10 +383,21 @@ Both scripts run the same sequence: `xsc` (compiles `golden_model.c` to a
 DPI-C shared library), `xvlog --sv` (compiles the RTL + testbench from
 `filelist.f`), `xelab -sv_lib` (elaborates and links the DPI library), and
 `xsim -R` (batch-mode run). To override the regression's random seed,
-pass the plusarg on the `xsim` command line (documented Xilinx xsim
-syntax): `xsim da_matvec_tb_sim -R -testplusarg SEED=1234` -- both
-scripts forward any extra arguments they're called with straight to this
-`xsim` step, e.g. `run_vivado.bat -testplusarg SEED=1234`.
+pass it as a plain positional argument to either script:
+```sh
+./run_vivado.sh 1234
+```
+```bat
+run_vivado.bat 1234
+```
+Internally, this becomes `xsim da_matvec_tb_sim -R -testplusarg "SEED=1234"`
+-- confirmed the hard way that the *quoting* matters here: forwarding an
+unquoted `-testplusarg SEED=1234` through (which is what an earlier
+version of these scripts did, generically passing through `"$@"`/`%*`)
+fails with `Expected a switch but found 1`; the value has to be quoted
+(`-testplusarg "SEED=1234"`) for `xsim` to parse it correctly. Both
+scripts now build that quoted form internally instead of asking the
+caller to get Vivado's specific quoting right themselves.
 
 Both scripts run directly from `sim/vivado/` rather than `cd`-ing into a
 work subdirectory first: `filelist.f`'s paths (`../../rtl/...`,
@@ -414,7 +425,7 @@ and getting the exact same pass count from it, which is itself a good
 sanity check that the DPI golden model and the RTL behave identically
 under both simulators.
 
-Getting there surfaced three real, simulator-specific issues, each now
+Getting there surfaced four real, simulator-specific issues, each now
 fixed in the committed source (not worked around by disabling anything):
 
 1. **The `filelist.f` path-resolution bug** described above (`xvlog`
@@ -439,6 +450,17 @@ fixed in the committed source (not worked around by disabling anything):
    `run_vivado.sh` and `run_vivado.bat` by grepping the run's own log for
    `REGRESSION PASSED` and setting the script's exit code from that,
    rather than trusting `xsim`'s.
+4. **`-testplusarg SEED=1234` forwarded unquoted fails**: an earlier
+   version of both scripts generically forwarded any extra CLI arguments
+   straight through to `xsim` (`"$@"`/`%*`), matching the Verilator/
+   Xcelium convention of a bare `+SEED=1234`. Under Vivado, forwarding
+   `-testplusarg SEED=1234` that way failed with
+   `Expected a switch but found 1`; the value needs to be quoted
+   (`-testplusarg "SEED=1234"`) for `xsim` to parse it. Fixed by having
+   both scripts take the seed as a plain positional argument
+   (`./run_vivado.sh 1234` / `run_vivado.bat 1234`) and build the
+   correctly-quoted `xsim` invocation internally, rather than asking the
+   caller to get Vivado's specific quoting right.
 
 `run_vivado.sh` (the Linux-native path) has *not* itself been run against
 a real Vivado install -- only `run_vivado.bat` (Windows) has -- but it's

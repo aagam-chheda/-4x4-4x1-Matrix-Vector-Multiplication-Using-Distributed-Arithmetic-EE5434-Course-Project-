@@ -3,6 +3,17 @@ REM Batch (non-project mode) Vivado xsim flow for the DA matrix-vector
 REM multiplier regression -- native Windows equivalent of run_vivado.sh,
 REM for a Vivado install on Windows (not inside WSL).
 REM
+REM Usage:
+REM   run_vivado.bat          rem default (fixed) seed
+REM   run_vivado.bat 1234     rem override the CRV seed
+REM
+REM Takes the seed as a plain positional argument (not the raw
+REM -testplusarg "SEED=<n>" xsim needs) and builds that switch internally
+REM with correct quoting -- confirmed directly that xsim mishandles an
+REM *unquoted* -testplusarg SEED=1234 forwarded through %*, failing with
+REM "Expected a switch but found 1"; quoting the value
+REM (-testplusarg "SEED=1234") is what actually works.
+REM
 REM Run this from a shell that already has xsc/xvlog/xelab/xsim on PATH,
 REM e.g. an ordinary Command Prompt after running
 REM   call C:\Xilinx\Vivado\<version>\settings64.bat
@@ -53,7 +64,11 @@ call xelab da_matvec_tb -sv_lib golden_model -s da_matvec_tb_sim
 if errorlevel 1 goto :fail
 
 echo == Running with xsim (batch mode) ==
-call xsim da_matvec_tb_sim -R %* > xsim_run.log 2>&1
+if "%~1"=="" (
+    call xsim da_matvec_tb_sim -R > xsim_run.log 2>&1
+) else (
+    call xsim da_matvec_tb_sim -R -testplusarg "SEED=%~1" > xsim_run.log 2>&1
+)
 type xsim_run.log
 
 findstr /C:"REGRESSION PASSED" xsim_run.log >nul

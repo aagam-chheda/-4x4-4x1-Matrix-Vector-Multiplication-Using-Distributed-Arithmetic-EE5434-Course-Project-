@@ -2,8 +2,19 @@
 # Batch (non-project mode) Vivado xsim flow for the DA matrix-vector
 # multiplier regression.
 #
+# Usage:
+#   ./run_vivado.sh          # default (fixed) seed
+#   ./run_vivado.sh 1234     # override the CRV seed
+#
 # Requires the Xilinx Vivado tool suite (xsc, xvlog, xelab, xsim) on PATH,
 # e.g. by sourcing <Vivado install>/settings64.sh first.
+#
+# Takes the seed as a plain positional argument (not the raw
+# `-testplusarg "SEED=<n>"` xsim needs) and builds that switch internally
+# with correct quoting -- confirmed directly that xsim mishandles an
+# *unquoted* `-testplusarg SEED=1234` (fails with "Expected a switch but
+# found 1"), so forwarding a bare `+SEED=1234`-style arg through
+# unquoted, the way the Verilator/Xcelium flows do, isn't safe here.
 #
 # NOTE: this script has been fixed up based on a real full pass against
 # Vivado 2024.2 (Windows), via sim/vivado/run_vivado.bat -- see the
@@ -45,7 +56,11 @@ echo "== Elaborating with xelab (linking DPI-C shared lib) =="
 xelab da_matvec_tb -sv_lib golden_model -s da_matvec_tb_sim
 
 echo "== Running with xsim (batch mode) =="
-xsim da_matvec_tb_sim -R "$@" | tee xsim_run.log
+if [ -n "${1:-}" ]; then
+    xsim da_matvec_tb_sim -R -testplusarg "SEED=$1" | tee xsim_run.log
+else
+    xsim da_matvec_tb_sim -R | tee xsim_run.log
+fi
 
 if grep -q "REGRESSION PASSED" xsim_run.log; then
     echo "== Vivado xsim run: PASSED (confirmed via log content, not xsim's own exit code) =="
