@@ -1,0 +1,30 @@
+# --- Verilator ---
+sim/verilator/obj_dir/
+sim/verilator/obj_dir_cov/
+sim/verilator/cov_annotate/
+sim/verilator/coverage.dat
+*.vcd
+*.fst
+*.fst.hier
+
+# --- Vivado / xsim ---
+sim/vivado/xsim_work/
+sim/vivado/.Xil/
+sim/vivado/xsim.dir/
+*.jou
+*.log
+*.pb
+*.wdb
+*.str
+webtalk*
+vivado*.backup.log
+vivado_pid*.str
+.Xil/
+
+# --- generic build artifacts ---
+*.o
+*.a
+*.so
+*.out
+*.vpi
+.cache/
