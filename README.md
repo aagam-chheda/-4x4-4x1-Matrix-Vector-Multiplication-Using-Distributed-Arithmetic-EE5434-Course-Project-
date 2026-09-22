@@ -26,6 +26,7 @@ tb/     da_matvec_tb.sv     - self-checking testbench + scoreboard
 sim/
   verilator/Makefile        - Verilator build/run/coverage flow
   vivado/                   - Vivado xsim batch flow (filelist + script)
+  xcelium/                  - Cadence Xcelium (xrun) batch flow (filelist + script)
 ```
 
 ## Architecture
@@ -290,15 +291,16 @@ anything in this project's Makefile -- a different Verilator install
 without `ccache` available will just call `g++` directly and build fine
 either way.
 
-**Vivado (xsim) is the one genuinely unverified piece.** There is no
-Vivado install in this development environment, so `sim/vivado/run_vivado.sh`
-has never actually been run (see the "Running in Vivado" section below
-for the specific points to double-check -- DPI-C via `xsc`, the
-`build_rom()` elaboration pattern, and exit-code propagation from
-`$fatal`). Everything else in this repo -- RTL, testbench, golden model,
-Verilator flow -- has been directly built and run, repeatedly, in this
-environment, including from a from-scratch clone in an unrelated
-directory.
+**Vivado (xsim) and Cadence Xcelium are genuinely unverified pieces.**
+There is no Vivado or Xcelium install in this development environment, so
+neither `sim/vivado/run_vivado.sh` nor `sim/xcelium/run_xcelium.sh` has
+ever actually been run (see their respective "Running in ..." sections
+below for the specific points to double-check on each -- DPI-C
+compilation, the `build_rom()` elaboration pattern, and exit-code
+propagation from `$fatal`, in each case). Everything else in this repo --
+RTL, testbench, golden model, Verilator flow -- has been directly built
+and run, repeatedly, in this environment, including from a from-scratch
+clone in an unrelated directory.
 
 ## Running in Verilator
 
@@ -371,6 +373,82 @@ sign-off, double-check:
   standard synthesizable style in both tools for a small register-only
   design, but flagged here since reset-style conventions can differ across
   FPGA sign-off flows.
+
+## Running in Cadence Xcelium
+
+```sh
+cd sim/xcelium
+./run_xcelium.sh                # default (fixed) seed
+./run_xcelium.sh +SEED=1234     # override the CRV seed for a fresh sequence
+```
+
+`xrun` must already be on `PATH` -- that's site-specific (a `module load
+xcelium` or sourcing a setup script on a shared EDA server) and outside
+this repo's control. The script runs a single `xrun` invocation that
+compiles, elaborates, and runs in one step:
+
+```sh
+xrun -sv -access +rwc -top da_matvec_tb \
+     -incdir ../../common -f filelist.f \
+     ../../dpi/golden_model.c \
+     -xmlibdirname xcelium_work/xcelium.d \
+     -l xcelium_work/xrun.log -R "$@"
+```
+
+- `-incdir ../../common` gives `` `include "matrix_a.inc" `` a search path
+  to resolve against, the same role `-I` plays for Verilator and `-i`
+  plays for `xvlog` in the Vivado flow.
+- `golden_model.c` is passed straight to `xrun` alongside the SV sources;
+  Xcelium compiles and links C/C++ DPI sources given on its command line
+  directly, without a separate shared-library-build step (unlike Vivado's
+  `xsc` + `xelab -sv_lib`) -- the `extern "C"` guard already in
+  `dpi/golden_model.c` (added for Verilator's C++-compiled-DPI behavior)
+  keeps this path safe either way.
+- `-R` runs to completion in batch mode after elaboration; any extra
+  arguments the script is called with (e.g. `+SEED=1234`) are forwarded
+  straight through to the simulation as plusargs, same convention as the
+  Verilator binary.
+
+**This has not been run against a real Xcelium install while authoring
+this repo** (no Xcelium available in that environment) -- functional
+sign-off there was done exclusively with Verilator. This flow was written
+directly against standard, documented `xrun` usage, not copy-adapted from
+a working reference -- so before treating an Xcelium run as sign-off,
+double-check:
+
+- **DPI-C compiled directly by `xrun`**: the simplest and most commonly
+  documented Xcelium DPI flow for plain scalar-argument functions (which
+  is all `golden_matvec` uses -- `byte`/`int` DPI types, no `svdpi.h`
+  dependency), but not exercised here. If Xcelium's C compilation step
+  rejects it, check `xcelium_work/xrun.log` for the specific compiler
+  invocation/error first -- it's very likely a missing `-l`/library flag
+  or a C-vs-C++ language-mode mismatch rather than anything about the DPI
+  function itself, given that the exact same C source already builds
+  cleanly under Verilator (g++) as shown in this repo.
+- **`$fatal`/exit-code propagation from `xrun -R`**: assumed to behave
+  like other simulators (nonzero process exit on `$fatal`), but not
+  verified against a real Xcelium install. If a CI script needs to key
+  off the result and the exit code proves unreliable, `grep -q
+  "REGRESSION PASSED" xcelium_work/xrun.log` against the log is a safe
+  fallback (the exact same string Verilator prints on success).
+- **`build_rom()`**: the same `automatic`-function-returning-an-unpacked-
+  array-at-elaboration-time pattern flagged in the Vivado section above.
+  Cadence's SystemVerilog parser is generally considered very
+  standards-compliant, so this is a lower-risk item than for Vivado, but
+  still unverified here -- the same explicit-`case`-statement fallback
+  applies if it's ever needed.
+- **Hierarchical references from the testbench into the DUT**
+  (`dut.load`, `dut.cnt`, `dut.sub`, `dut.addr`, `dut.busy`, used for
+  coverage tracking): standard, compile-time-resolved SystemVerilog
+  cross-module references, not a debug/PLI feature, so they shouldn't
+  need `-access` -- the script passes `-access +rwc` anyway since it's
+  cheap and useful if you want to add waveform dumping later.
+
+If you hit an actual error running this, the fastest way to get help
+debugging it (from me, without an Xcelium install to reproduce against)
+is the exact `xrun` error text plus the surrounding lines of
+`xcelium_work/xrun.log` -- SystemVerilog semantics can be reasoned about
+from the error message even without the tool in hand.
 
 ## Interface
 

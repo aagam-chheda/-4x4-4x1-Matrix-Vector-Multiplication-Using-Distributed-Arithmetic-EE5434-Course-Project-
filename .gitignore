@@ -21,6 +21,18 @@ vivado*.backup.log
 vivado_pid*.str
 .Xil/
 
+# --- Cadence Xcelium ---
+sim/xcelium/xcelium_work/
+sim/xcelium/xrun.log
+sim/xcelium/xrun.history
+sim/xcelium/.simvision/
+sim/xcelium/INCA_libs/
+xrun.log
+xrun.history
+xcelium.d/
+INCA_libs/
+.simvision/
+
 # --- generic build artifacts ---
 *.o
 *.a
