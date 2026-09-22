@@ -137,6 +137,10 @@ it did, on the very first regression run.
 
 ## Testbench / verification
 
+The design intent here is adversarial: every test category below was
+chosen to target a specific class of bug, not just to demonstrate the
+happy path. **Total: 11,113 checks**, all passing.
+
 - **Golden model** (`dpi/golden_model.c`): plain C, `y = A*x` for signed
   8-bit inputs against the same constant `A`. No `svdpi.h` dependency (the
   exported function only uses scalar `byte`/`int` DPI types), and the
@@ -144,38 +148,107 @@ it did, on the very first regression run.
   `#ifdef __cplusplus` -- Verilator compiles DPI `.c` sources with a C++
   compiler by default, which name-mangles a plain C function unless it's
   marked `extern "C"`; this keeps the same source portable to a C-compiled
-  Vivado `xsc` flow too.
-- **Directed tests**: all-zero, all-(-128), all-(+127), a hand-picked
-  mixed-sign vector, and a near-worst-case-magnitude vector (signs aligned
-  to maximize row 0's output magnitude for this specific `A`).
-- **Random regression**: 5000 signed 8-bit vectors. Each element is drawn
-  40% of the time from a small extreme-value set
-  (`-128,-127,127,126,-1,0,1`) and 60% of the time uniformly from the full
-  8-bit signed range; additionally, 10% of the 5000 vectors force all four
-  elements to the same extreme value, to stress the all-same-sign worst-case
-  pattern explicitly.
+  Vivado `xsc` flow too. Every single check below (directed and random)
+  gets its expected value live from this model -- there is no hardcoded
+  expected output anywhere in the testbench.
+- **Hand-picked directed edge cases** (5): all-zero, all-(-128),
+  all-(+127), a mixed-sign vector, and a near-worst-case-magnitude vector
+  (signs aligned to maximize row 0's output magnitude for this specific
+  `A`, ~33022 -- see the note in "Architecture" above about why this isn't
+  the generic 65536 bound).
+- **Back-to-back accumulator-reset regression** (6): the exact class of
+  sequence (repeated/complementary vectors, no idle gap) that caught the
+  historical accumulator-reset bug during bring-up (see below) -- kept as
+  an explicit, labeled regression test rather than relying only on
+  incidental back-to-back timing elsewhere in the suite.
+- **Per-channel bit-position walk** (32): each of the 8 bit weights
+  (1, 2, 4, 8, 16, 32, 64, -128) applied to one input channel at a time,
+  others held at 0. Targets bit-order/shift-register/Horner-weighting bugs
+  that a random vector might only trigger by chance. This category is not
+  theoretical: see "Mutation testing" below, where it's exactly what
+  caught an injected channel-address-swap bug that the original
+  all-same-value directed tests completely missed.
+- **Hypercube corners** (16): every combination of the two most extreme
+  values (-128/127) across all four inputs.
+- **Alternating-bit-pattern vectors** (2): `0x55`/`0xAA` and its rotation.
+- **Boundary-value permutations** (24): all 4! permutations of
+  `(127, -128, 126, -127)` across the four input slots.
+- **Control/handshake robustness** (3 scenarios, not textbook sequences):
+  `start` held high for an entire computation (confirms the FSM ignores
+  it while `active`, and that dropping it exactly at `done` prevents an
+  auto-retrigger); a spurious one-cycle `start` pulse with *different*
+  data injected mid-computation (confirms the in-flight result is
+  unaffected); an async `rst_n` injected mid-computation (confirms
+  `busy`/`done` cleanly deassert and a following computation still
+  produces a correct, golden-model-checked result).
+- **Exhaustive single-channel sweep** (1024 = 4 x 256): every signed
+  8-bit value on one input channel at a time, others held at 0. Not
+  random -- deterministically exhaustive per channel.
+- **Constrained-random regression** (10,000): each element drawn with a
+  3-tier bias -- 30% from an exact/near-extreme literal set
+  (`-128,-127,-126,127,126,125,-1,0,1,2,-2`), 20% "boundary jitter" (a
+  random 0-6 offset inward from one of the two rails, to stress values
+  *adjacent to* the extremes, not just the extremes themselves), and 50%
+  full uniform for broad exploration; additionally, 10% of the 10,000
+  vectors force all four elements to the same extreme value. Deterministic
+  by default (fixed seed `0xDA5EED`) for reproducible CI runs -- pass
+  `+SEED=<n>` (e.g. `./obj_dir/Vda_matvec_tb +SEED=1234`) to explore a
+  fresh sequence. Confirmed passing in this environment against the
+  default seed and several explicit overrides (`+SEED=1`, `+SEED=42`,
+  `+SEED=999999`).
 - **Scoreboard**: on every `done` pulse, compares all four DUT outputs
   against the DPI golden model for the same inputs, tallies pass/fail, and
-  prints a final summary. Any mismatch -- or incomplete cycle/control-path
-  coverage (see below) -- triggers `$fatal`, which gives a nonzero process
-  exit code for CI use (verified in this environment: a standalone `$fatal`
-  test under `verilator --binary` returns exit code 1).
-- **Cycle/control-path coverage**: rather than depend on simulator-specific
-  functional-coverage tooling (which could behave differently between
-  Verilator and Vivado), the testbench directly tracks, via hierarchical
-  reference into the DUT (`dut.load`, `dut.cnt`, `dut.sub`, `dut.busy`),
-  which of the 8 shift cycles and which of the two adder/subtractor control
-  paths (`sub=1` on cycle 0, `sub=0` on cycles 1-7) were exercised across
-  the whole regression, and fails the run if any are missing. Confirmed hit
-  in this environment: all 8 cycles and both control paths.
+  prints a final summary. Any mismatch -- or incomplete coverage (see
+  below) -- triggers `$fatal`, which gives a nonzero process exit code for
+  CI use (verified in this environment: a standalone `$fatal` test under
+  `verilator --binary` returns exit code 1).
+- **Cycle/control-path/address coverage**: rather than depend on
+  simulator-specific functional-coverage tooling (which could behave
+  differently between Verilator and Vivado), the testbench directly
+  tracks, via hierarchical reference into the DUT (`dut.load`, `dut.cnt`,
+  `dut.sub`, `dut.addr`, `dut.busy`), which of the 8 shift cycles, which
+  of the two adder/subtractor control paths (`sub=1` on cycle 0, `sub=0`
+  on cycles 1-7), and which of the 16 possible DA ROM addresses were
+  exercised across the whole regression, failing the run if any are
+  missing. Confirmed hit in this environment: all 8 cycles, both control
+  paths, and all 16/16 ROM addresses.
 - Additionally, `make coverage` under `sim/verilator/` runs a Verilator
   `--coverage` (line/toggle/branch) build for a supplementary quantitative
-  report. Result in this environment: 97.7% toggle, 82.4% branch, 100% line
-  coverage on every line that executes at simulation time. The only 0%-hit
-  lines are inside `build_rom()`, the elaboration-time function that
-  constant-folds the ROM tables into `localparam`s -- it runs once during
-  compile-time elaboration, not during simulation, so it correctly shows no
-  simulation-time hits; this is expected, not a coverage hole.
+  report. Result in this environment: 96.6% toggle, 75.9% branch, 100%
+  line coverage on every RTL line that executes at simulation time. The
+  only 0%-hit RTL lines are inside `build_rom()`, the elaboration-time
+  function that constant-folds the ROM tables into `localparam`s -- it
+  runs once during compile-time elaboration, not during simulation, so it
+  correctly shows no simulation-time hits; this is expected, not a
+  coverage hole. On the testbench side, the only 0%-hit lines are
+  failure-diagnostic branches (`$display("FAIL...")`, timeout guards) that
+  by construction only execute when something is actually broken -- a
+  healthy shape for a report from an all-passing run, not a gap.
+
+### Mutation testing: does this suite actually catch bugs?
+
+To check the suite has real bug-catching power rather than just a large
+vector count, two mutants were deliberately injected into the RTL,
+confirmed to be caught, then reverted (not part of the committed source --
+this is a one-time check performed during development):
+
+1. **Reintroduced the historical accumulator-reset bug** (forced
+   `acc0_shifted` to always shift the old accumulator, even on the
+   sign-bit cycle, for row 0 only). Caught immediately: 11,061/11,113
+   checks failed, starting from the third directed test, with `y0`
+   specifically wrong while `y1..y3` stayed correct -- confirming the
+   scoreboard's per-row comparison catches even a single-row-only
+   corruption, not just gross across-the-board breakage.
+2. **Swapped the address-bit wiring for input channels 2 and 3** in the
+   steady-state (post-cycle-0) address mux -- a "miswired ROM address
+   bus" class of bug. This one is instructive: `all-neg128` and
+   `all-pos127` (x2 == x3 in both) **did not detect it at all**, since
+   swapping which channel feeds which address bit is invisible when both
+   channels carry the same value. It was caught immediately by the
+   per-channel bit-position walk (`bitwalk-ch2-*`, `bitwalk-ch3-*`) and
+   the boundary permutations, which is exactly why those categories were
+   added -- a test suite built only from same-value corner cases would
+   have shipped this bug silently.
 
 ## Running in Verilator
 
@@ -190,8 +263,17 @@ make clean
 with `verilator --binary --timing`, which lets Verilator auto-generate the
 C++ main and drive `$finish`/`$fatal` directly -- no hand-written C++
 harness needed. Confirmed working in this environment (Verilator 5.053):
-5005/5005 scoreboard checks pass, full cycle/control-path coverage, exit
-code 0 on pass / 1 on any injected failure.
+**11,113/11,113 scoreboard checks pass**, full cycle/control-path/address
+coverage (16/16 ROM addresses), exit code 0 on pass / 1 on any injected
+failure (see "Mutation testing" above).
+
+The random regression uses a fixed default seed for reproducible runs; to
+try a different random sequence, pass `+SEED=<n>` directly to the built
+binary:
+
+```sh
+./obj_dir/Vda_matvec_tb +SEED=1234
+```
 
 ## Running in Vivado (xsim, batch/non-project mode)
 
@@ -203,7 +285,10 @@ cd sim/vivado
 This runs, in order: `xsc` (compiles `golden_model.c` to a DPI-C shared
 library), `xvlog --sv` (compiles the RTL + testbench from `filelist.f`),
 `xelab -sv_lib` (elaborates and links the DPI library), and `xsim -R`
-(batch-mode run).
+(batch-mode run). To override the regression's random seed under xsim,
+pass the plusarg on the `xsim` command line (documented Xilinx xsim
+syntax; not exercised here since there's no Vivado install to test
+against): `xsim da_matvec_tb_sim -R -testplusarg SEED=1234`.
 
 **This has not been run against a real Vivado install in this
 environment** (Vivado is not installed here) -- functional sign-off here

@@ -1,18 +1,49 @@
 // da_matvec_tb.sv
 //
-// Self-checking testbench + scoreboard for da_matvec_mult.
-//   - DPI-C golden model (dpi/golden_model.c) provides expected results.
-//   - Directed tests cover all-zero, all-(-128), all-(+127), a hand-picked
-//     mixed-sign vector, and a near-worst-case-magnitude vector.
-//   - 5000 random signed 8-bit vectors, biased toward the value extremes,
-//     are checked against the golden model.
-//   - A lightweight cycle/coverage tracker confirms all 8 shift cycles and
-//     both the subtract (cycle 0) and add (cycles 1-7) control paths of the
-//     DUT are exercised at least once, without depending on simulator-
-//     specific coverage tooling (works identically under Verilator and
-//     Vivado xsim).
-//   - Exits with a nonzero status on any scoreboard mismatch (via $fatal),
-//     suitable for CI/regression use.
+// Self-checking testbench + scoreboard for da_matvec_mult. The goal of
+// this suite is to actively try to break the DUT, not just demonstrate
+// it working: every category below was chosen to target a specific class
+// of bug (bit-position/shift-order errors, ROM-address/sign-extension
+// errors, accumulator-reset errors, handshake/control-path races,
+// overflow-adjacent magnitudes), on top of broad random coverage.
+//
+//   - DPI-C golden model (dpi/golden_model.c) provides expected results
+//     for every single check below -- there are no hardcoded expected
+//     outputs anywhere in this file.
+//   - Hand-picked directed edge cases: all-zero, all-(-128), all-(+127),
+//     a mixed-sign vector, and a near-worst-case-magnitude vector.
+//   - Back-to-back regression tests for the accumulator-reset bug found
+//     during bring-up (see README): repeated/complementary vectors with
+//     no idle gap between them.
+//   - Per-channel bit-position walk (32 vectors): each of the 8 bit
+//     weights (1,2,4,...,64,-128) applied to each input channel in
+//     isolation, to catch any bit-order/shift-register/Horner-weighting
+//     bug that a "random" vector might only trigger by chance.
+//   - Hypercube corners (16 vectors): every combination of the two most
+//     extreme values (-128/127) across all four inputs.
+//   - Alternating-bit-pattern vectors (0x55/0xAA and its rotation).
+//   - All 24 permutations of the four distinct near-extreme values
+//     (127, -128, 126, -127) across the four input slots.
+//   - Control/handshake robustness tests: start held high through an
+//     entire computation, a spurious start pulse injected mid-computation
+//     with different data, and an async reset injected mid-computation --
+//     each checks the DUT recovers/behaves correctly, not just that a
+//     clean textbook sequence works.
+//   - Exhaustive single-channel sweep (1024 vectors): all 256 signed
+//     8-bit values on one input channel at a time, others held at 0.
+//   - Constrained-random regression: 10000 vectors, generated with a
+//     3-tier bias (exact/near-extreme literals, boundary-adjacent
+//     jitter, and full uniform) so the corners get disproportionate
+//     attention without giving up broad random coverage. Deterministic
+//     by default (fixed seed) for reproducible CI runs; override with
+//     +SEED=<n> to explore a fresh random sequence.
+//   - Coverage tracking (no dependence on simulator-specific functional
+//     coverage tooling, so it behaves identically under Verilator and
+//     Vivado xsim): all 8 shift cycles, both adder/subtractor control
+//     paths (sub=1 on cycle 0, sub=0 on cycles 1-7), and all 16 possible
+//     DA ROM addresses are confirmed exercised by the end of the run.
+//   - Exits with a nonzero status on any scoreboard mismatch or coverage
+//     shortfall (via $fatal), suitable for CI/regression use.
 
 `timescale 1ns/1ps
 
@@ -32,7 +63,7 @@ module da_matvec_tb;
     localparam int XW = 8;
     localparam int YW = 18;
     localparam int CLK_PERIOD = 10;
-    localparam int NUM_RANDOM = 5000;
+    localparam int NUM_RANDOM = 10000;
 
     logic                 clk;
     logic                 rst_n;
@@ -79,9 +110,11 @@ module da_matvec_tb;
     // Cycle-path coverage: cycle_seen[0] is the sign/subtract cycle,
     // cycle_seen[1..7] are the shift-add cycles. sub_seen tracks whether
     // both control paths (sub=1, sub=0) of the shared adder/subtractor
-    // were exercised.
+    // were exercised. addr_seen tracks all 16 possible 4-bit DA ROM
+    // addresses (one bit per input) actually presented to the ROMs.
     bit cycle_seen[8];
     bit sub_seen[2];
+    bit addr_seen[16];
 
     // Race-free coverage sampling: values are stable well before the next
     // posedge, so sampling on negedge cleanly observes the control signals
@@ -94,12 +127,15 @@ module da_matvec_tb;
             cyc_idx = dut.load ? 3'd0 : dut.cnt;
             cycle_seen[cyc_idx] <= 1'b1;
             sub_seen[dut.sub]   <= 1'b1;
+            addr_seen[dut.addr] <= 1'b1;
         end
     end
 
     // ------------------------------------------------------------------
     // Driver + scoreboard task: apply one vector, wait for done, compare
-    // against the DPI golden model.
+    // against the DPI golden model. Waits for the DUT to be idle before
+    // issuing start, but with only a single negedge of margin -- back-
+    // to-back calls already exercise near-zero-gap restart timing.
     // ------------------------------------------------------------------
     task automatic apply_and_check(
         input logic signed [XW-1:0] tx0,
@@ -148,20 +184,197 @@ module da_matvec_tb;
         end
     endtask
 
+    // ------------------------------------------------------------------
+    // Control/handshake robustness tasks. These don't go through
+    // apply_and_check because they deliberately drive start/rst_n in
+    // non-textbook ways to probe the FSM's edge behavior.
+    // ------------------------------------------------------------------
+
+    // Holds `start` high for the *entire* computation (not just a single
+    // pulse), dropping it only once `done` is observed. Confirms the FSM
+    // ignores start while active (load = start && !active) rather than
+    // restarting mid-computation, and that dropping start exactly at
+    // done cleanly prevents any auto-retrigger.
+    task automatic test_held_start();
+        int g0, g1, g2, g3;
+        logic signed [XW-1:0] tx0, tx1, tx2, tx3;
+        tx0 = 8'sd50; tx1 = -8'sd77; tx2 = 8'sd13; tx3 = -8'sd1;
+
+        while (busy) @(negedge clk);
+        @(negedge clk);
+        x0 = tx0; x1 = tx1; x2 = tx2; x3 = tx3;
+        start = 1'b1;                 // held high, unlike the usual 1-cycle pulse
+        while (!done) @(negedge clk);
+        start = 1'b0;                 // dropped in the same negedge done is seen,
+                                       // before the next posedge can re-evaluate load
+
+        golden_matvec(tx0, tx1, tx2, tx3, g0, g1, g2, g3);
+        total_count++;
+        if (y0 !== YW'(g0) || y1 !== YW'(g1) || y2 !== YW'(g2) || y3 !== YW'(g3)) begin
+            fail_count++;
+            $display("FAIL[%0d] held-start x=(%0d,%0d,%0d,%0d) DUT y=(%0d,%0d,%0d,%0d) EXP y=(%0d,%0d,%0d,%0d)",
+                      total_count, tx0, tx1, tx2, tx3, y0, y1, y2, y3, g0, g1, g2, g3);
+        end else begin
+            pass_count++;
+        end
+
+        @(negedge clk);
+        if (busy) begin
+            total_count++;
+            fail_count++;
+            $display("FAIL[%0d] held-start: spurious retrigger (busy still high one cycle after done+start-drop)",
+                      total_count);
+        end
+    endtask
+
+    // Kicks off a real computation, then injects a one-cycle spurious
+    // `start` pulse with *different* data partway through, mimicking an
+    // environment bug that asserts start while busy. Confirms the
+    // in-flight computation is unaffected and still produces the result
+    // for the original vector, not the glitch vector.
+    task automatic test_start_while_busy();
+        int g0, g1, g2, g3;
+        logic signed [XW-1:0] va0, va1, va2, va3;
+        logic signed [XW-1:0] vb0, vb1, vb2, vb3;
+        va0 = 8'sd100; va1 = -8'sd45; va2 = 8'sd7;    va3 = -8'sd120;
+        vb0 = -8'sd128; vb1 = 8'sd127; vb2 = -8'sd1;  vb3 = 8'sd64;
+
+        while (busy) @(negedge clk);
+        @(negedge clk);
+        x0 = va0; x1 = va1; x2 = va2; x3 = va3;
+        start = 1'b1;
+        @(negedge clk);
+        start = 1'b0;
+
+        repeat (2) @(negedge clk);
+        if (!busy) begin
+            total_count++;
+            fail_count++;
+            $display("FAIL[%0d] start-while-busy: expected busy high mid-computation before glitch injection",
+                      total_count);
+            return;
+        end
+
+        // glitch: different data, one-cycle start pulse, mid-computation
+        x0 = vb0; x1 = vb1; x2 = vb2; x3 = vb3;
+        start = 1'b1;
+        @(negedge clk);
+        start = 1'b0;
+        x0 = va0; x1 = va1; x2 = va2; x3 = va3;   // restore, for clarity of intent
+
+        while (!done) @(negedge clk);
+
+        golden_matvec(va0, va1, va2, va3, g0, g1, g2, g3);
+        total_count++;
+        if (y0 !== YW'(g0) || y1 !== YW'(g1) || y2 !== YW'(g2) || y3 !== YW'(g3)) begin
+            fail_count++;
+            $display("FAIL[%0d] start-while-busy: glitch corrupted in-flight computation. DUT y=(%0d,%0d,%0d,%0d) EXP y=(%0d,%0d,%0d,%0d)",
+                      total_count, y0, y1, y2, y3, g0, g1, g2, g3);
+        end else begin
+            pass_count++;
+        end
+    endtask
+
+    // Injects an async reset partway through a computation. Confirms
+    // busy/done cleanly deassert and that a subsequent computation
+    // still produces a correct result (clean recovery, not just "didn't
+    // crash the simulator").
+    task automatic test_reset_midway();
+        logic signed [XW-1:0] tx0, tx1, tx2, tx3;
+        tx0 = 8'sd77; tx1 = -8'sd33; tx2 = 8'sd5; tx3 = -8'sd90;
+
+        while (busy) @(negedge clk);
+        @(negedge clk);
+        x0 = tx0; x1 = tx1; x2 = tx2; x3 = tx3;
+        start = 1'b1;
+        @(negedge clk);
+        start = 1'b0;
+
+        repeat (3) @(negedge clk);
+        if (!busy) begin
+            total_count++;
+            fail_count++;
+            $display("FAIL[%0d] reset-midway: expected busy high before mid-computation reset", total_count);
+            return;
+        end
+
+        rst_n = 1'b0;
+        repeat (2) @(negedge clk);
+        rst_n = 1'b1;
+        @(negedge clk);
+
+        total_count++;
+        if (busy || done) begin
+            fail_count++;
+            $display("FAIL[%0d] reset-midway: busy/done not cleanly deasserted after mid-computation reset (busy=%0b done=%0b)",
+                      total_count, busy, done);
+        end else begin
+            pass_count++;
+        end
+
+        // Confirm clean recovery with a fresh, correctly-checked computation.
+        apply_and_check(8'sd42, -8'sd17, 8'sd99, -8'sd3, "post-reset-recovery");
+    endtask
+
     // Fixed set of extreme values used to force all-same-extreme vectors.
     localparam logic signed [XW-1:0] SAME_EXTREME_VALS[4] = '{-8'sd128, 8'sd127, -8'sd1, 8'sd1};
 
+    // Per-channel bit-position walk: one weight per DA shift-cycle bit
+    // position, MSB (sign, -128) last to match the visual bit order.
+    localparam logic signed [XW-1:0] BIT_WEIGHTS[8] =
+        '{8'sd1, 8'sd2, 8'sd4, 8'sd8, 8'sd16, 8'sd32, 8'sd64, -8'sd128};
+
+    // All 24 permutations of the four distinct near-extreme values
+    // (127, -128, 126, -127) across the four input slots.
+    localparam logic signed [XW-1:0] BOUNDARY_PERMS[24][4] = '{
+        '{127, -128, 126, -127},
+        '{127, -128, -127, 126},
+        '{127, 126, -128, -127},
+        '{127, 126, -127, -128},
+        '{127, -127, -128, 126},
+        '{127, -127, 126, -128},
+        '{-128, 127, 126, -127},
+        '{-128, 127, -127, 126},
+        '{-128, 126, 127, -127},
+        '{-128, 126, -127, 127},
+        '{-128, -127, 127, 126},
+        '{-128, -127, 126, 127},
+        '{126, 127, -128, -127},
+        '{126, 127, -127, -128},
+        '{126, -128, 127, -127},
+        '{126, -128, -127, 127},
+        '{126, -127, 127, -128},
+        '{126, -127, -128, 127},
+        '{-127, 127, -128, 126},
+        '{-127, 127, 126, -128},
+        '{-127, -128, 127, 126},
+        '{-127, -128, 126, 127},
+        '{-127, 126, 127, -128},
+        '{-127, 126, -128, 127}
+    };
+
     // ------------------------------------------------------------------
-    // Biased random x generator: skews toward the signed 8-bit extremes
-    // (+/-128/127 and near-extreme values) rather than a purely uniform
-    // distribution.
+    // Biased random x generator, 3-tier:
+    //   30% - exact/near-extreme literal set
+    //   20% - boundary jitter: a small random offset inward from one of
+    //         the two rails, stressing values adjacent to (not just at)
+    //         the extremes
+    //   50% - full uniform 8-bit signed range, for broad coverage
     // ------------------------------------------------------------------
     function automatic logic signed [XW-1:0] biased_x();
-        logic signed [XW-1:0] extremes[7] = '{-128, -127, 127, 126, -1, 0, 1};
+        localparam logic signed [XW-1:0] EXTREMES[11] =
+            '{-128, -127, -126, 127, 126, 125, -1, 0, 1, 2, -2};
         int pick;
+        int offset;
         pick = $urandom_range(0, 99);
-        if (pick < 40) begin
-            biased_x = extremes[$urandom_range(0, 6)];
+        if (pick < 30) begin
+            biased_x = EXTREMES[$urandom_range(0, 10)];
+        end else if (pick < 50) begin
+            offset = $urandom_range(0, 6);
+            if ($urandom_range(0, 1) == 1)
+                biased_x = XW'(-128 + offset);
+            else
+                biased_x = XW'(127 - offset);
         end else begin
             // uniform 0..255 shifted into the signed 8-bit range -128..127
             biased_x = XW'($urandom_range(0, 255) - 128);
@@ -172,20 +385,28 @@ module da_matvec_tb;
     // Test sequence
     // ------------------------------------------------------------------
     initial begin
-        int r;
+        int r, ch, b, m, val;
+        int seed;
         logic signed [XW-1:0] rx0, rx1, rx2, rx3;
+        logic signed [XW-1:0] wv0, wv1, wv2, wv3;
+        logic signed [XW-1:0] cv0, cv1, cv2, cv3;
+        logic signed [XW-1:0] sv0, sv1, sv2, sv3;
+
+        if (!$value$plusargs("SEED=%d", seed)) seed = 32'hDA5EED;
+        $display("Random seed = %0d (override with +SEED=<n> for a fresh sequence)", seed);
+        void'($urandom(seed));
 
         rst_n = 1'b0;
         start = 1'b0;
         x0 = '0; x1 = '0; x2 = '0; x3 = '0;
         for (int i = 0; i < 8; i++) cycle_seen[i] = 1'b0;
-        sub_seen[0] = 1'b0;
-        sub_seen[1] = 1'b0;
+        for (int i = 0; i < 2; i++) sub_seen[i] = 1'b0;
+        for (int i = 0; i < 16; i++) addr_seen[i] = 1'b0;
         repeat (3) @(negedge clk);
         rst_n = 1'b1;
         @(negedge clk);
 
-        $display("=== Directed tests ===");
+        $display("=== Directed: hand-picked edge cases ===");
         apply_and_check(8'sd0,    8'sd0,    8'sd0,    8'sd0,    "all-zero");
         apply_and_check(-8'sd128, -8'sd128, -8'sd128, -8'sd128, "all-neg128");
         apply_and_check(8'sd127,  8'sd127,  8'sd127,  8'sd127,  "all-pos127");
@@ -199,7 +420,72 @@ module da_matvec_tb;
         // reaches -- see README.
         apply_and_check(-8'sd128, 8'sd127,  8'sd127,  -8'sd128, "near-worst-case-magnitude");
 
-        $display("=== Random regression: %0d vectors ===", NUM_RANDOM);
+        $display("=== Directed: back-to-back accumulator-reset regression ===");
+        // This exact sequence (repeated/complementary vectors with no
+        // idle gap) is what caught the historical bug where the
+        // accumulator carried the previous result into the next
+        // computation's sign-bit cycle instead of starting from 0.
+        apply_and_check(8'sd127, 8'sd127, 8'sd127, 8'sd127,     "back2back-same-1");
+        apply_and_check(8'sd127, 8'sd127, 8'sd127, 8'sd127,     "back2back-same-2");
+        apply_and_check(8'sd127, 8'sd127, 8'sd127, 8'sd127,     "back2back-same-3");
+        apply_and_check(-8'sd128, -8'sd128, -8'sd128, -8'sd128, "back2back-negated-after-positive");
+        apply_and_check(8'sd0,   8'sd0,   8'sd0,   8'sd0,       "back2back-zero-after-extreme");
+        apply_and_check(8'sd127, 8'sd127, 8'sd127, 8'sd127,     "back2back-extreme-after-zero");
+
+        $display("=== Directed: per-channel bit-position walk (32 vectors) ===");
+        for (ch = 0; ch < 4; ch++) begin
+            for (b = 0; b < 8; b++) begin
+                wv0 = '0; wv1 = '0; wv2 = '0; wv3 = '0;
+                case (ch)
+                    0: wv0 = BIT_WEIGHTS[b];
+                    1: wv1 = BIT_WEIGHTS[b];
+                    2: wv2 = BIT_WEIGHTS[b];
+                    3: wv3 = BIT_WEIGHTS[b];
+                endcase
+                apply_and_check(wv0, wv1, wv2, wv3, $sformatf("bitwalk-ch%0d-bit%0d", ch, b));
+            end
+        end
+
+        $display("=== Directed: hypercube corners, all combinations of -128/127 (16 vectors) ===");
+        for (m = 0; m < 16; m++) begin
+            cv0 = m[0] ? -8'sd128 : 8'sd127;
+            cv1 = m[1] ? -8'sd128 : 8'sd127;
+            cv2 = m[2] ? -8'sd128 : 8'sd127;
+            cv3 = m[3] ? -8'sd128 : 8'sd127;
+            apply_and_check(cv0, cv1, cv2, cv3, $sformatf("hypercube-corner-%0d", m));
+        end
+
+        $display("=== Directed: alternating bit-pattern vectors ===");
+        apply_and_check(8'sd85,  -8'sd86, 8'sd85,  -8'sd86, "alternating-0x55-0xAA");
+        apply_and_check(-8'sd86, 8'sd85,  -8'sd86, 8'sd85,  "alternating-0xAA-0x55");
+
+        $display("=== Directed: boundary-value permutations (24 vectors) ===");
+        for (m = 0; m < 24; m++) begin
+            apply_and_check(BOUNDARY_PERMS[m][0], BOUNDARY_PERMS[m][1],
+                             BOUNDARY_PERMS[m][2], BOUNDARY_PERMS[m][3],
+                             $sformatf("boundary-perm-%0d", m));
+        end
+
+        $display("=== Directed: control/handshake robustness ===");
+        test_held_start();
+        test_start_while_busy();
+        test_reset_midway();
+
+        $display("=== Exhaustive single-channel sweep: 4 x 256 = 1024 vectors ===");
+        for (ch = 0; ch < 4; ch++) begin
+            for (val = -128; val <= 127; val++) begin
+                sv0 = '0; sv1 = '0; sv2 = '0; sv3 = '0;
+                case (ch)
+                    0: sv0 = XW'(val);
+                    1: sv1 = XW'(val);
+                    2: sv2 = XW'(val);
+                    3: sv3 = XW'(val);
+                endcase
+                apply_and_check(sv0, sv1, sv2, sv3, $sformatf("sweep-ch%0d-val%0d", ch, val));
+            end
+        end
+
+        $display("=== Constrained-random regression: %0d vectors ===", NUM_RANDOM);
         for (r = 0; r < NUM_RANDOM; r++) begin
             // Occasionally force all four inputs to the same extreme value
             // to stress the all-same-sign worst-case pattern explicitly.
@@ -227,20 +513,28 @@ module da_matvec_tb;
         $display("========================================");
 
         begin
-            bit cyc_ok, sub_ok;
+            bit cyc_ok, sub_ok, addr_ok;
+            int addr_hit_count;
             cyc_ok = 1'b1;
             sub_ok = sub_seen[0] && sub_seen[1];
+            addr_ok = 1'b1;
+            addr_hit_count = 0;
             for (int i = 0; i < 8; i++) begin
                 if (!cycle_seen[i]) cyc_ok = 1'b0;
             end
-            $display(" Cycle-path coverage");
-            $display("   all 8 shift cycles exercised : %s", cyc_ok ? "YES" : "NO");
-            $display("   sub=1 (cycle 0) exercised     : %s", sub_seen[1] ? "YES" : "NO");
-            $display("   sub=0 (cycles 1-7) exercised  : %s", sub_seen[0] ? "YES" : "NO");
+            for (int i = 0; i < 16; i++) begin
+                if (addr_seen[i]) addr_hit_count++;
+                else addr_ok = 1'b0;
+            end
+            $display(" Cycle/address coverage");
+            $display("   all 8 shift cycles exercised   : %s", cyc_ok ? "YES" : "NO");
+            $display("   sub=1 (cycle 0) exercised       : %s", sub_seen[1] ? "YES" : "NO");
+            $display("   sub=0 (cycles 1-7) exercised    : %s", sub_seen[0] ? "YES" : "NO");
+            $display("   DA ROM addresses exercised      : %0d/16", addr_hit_count);
             $display("========================================");
-            if (!cyc_ok || !sub_ok) begin
+            if (!cyc_ok || !sub_ok || !addr_ok) begin
                 fail_count++;
-                $display("FAIL: cycle/control-path coverage incomplete");
+                $display("FAIL: cycle/control-path/address coverage incomplete");
             end
         end
 
