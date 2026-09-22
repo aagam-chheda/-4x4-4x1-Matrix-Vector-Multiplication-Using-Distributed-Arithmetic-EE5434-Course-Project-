@@ -250,6 +250,56 @@ this is a one-time check performed during development):
    added -- a test suite built only from same-value corner cases would
    have shipped this bug silently.
 
+## Portability / requirements
+
+Nothing in the repo hardcodes a path, username, or machine-specific
+setting (checked with `grep` across all sources -- clean -- and by
+cloning the repo into an unrelated directory and running the full
+regression from there, which reproduced the same 11,113/11,113 pass).
+The Verilator flow is otherwise plain SystemVerilog/C -- what actually
+needs to be present on another machine:
+
+- **Verilator >= 5.002.** This repo relies on `--timing` (for the
+  testbench's `@(negedge clk)` inside tasks/loops) and `--binary` (so
+  Verilator generates the C++ main itself). Both were introduced
+  together in Verilator's first v5 release, 5.002 (2022-10-29) -- so any
+  reasonably current Verilator install qualifies, not just a bleeding-edge
+  one. Concretely: this repo was built and verified here against
+  `5.053 devel` (a git snapshot build); Ubuntu's own package repo
+  currently ships `5.032-1` via `apt install verilator`, comfortably
+  above the minimum. Not independently tested against an older/different
+  installed version in this environment, but nothing used here is newer
+  than the 2022 baseline.
+- **A C++20-capable g++ or clang++.** Verilator's `--timing` feature
+  itself requires C++20 (per Verilator's own release notes) for the code
+  it generates and compiles. GCC 10+ / Clang 10+ or newer should be fine;
+  verified here with GCC 15.2.0.
+- **GNU Make and a POSIX shell (bash).** The Verilator Makefile and
+  `sim/vivado/run_vivado.sh` assume Linux/macOS/WSL conventions
+  (`rm -rf`, forward-slash paths, etc.). Not adapted for native Windows
+  `cmd`/PowerShell -- use WSL there.
+- **`git` and `gh`** only if you want to reproduce the clone/push flow
+  used to stand this repo up; not needed just to build and simulate.
+
+One thing that is *not* a repo dependency, but could confuse a first
+build on a different machine: this environment's Verilator install
+happens to route its generated C++ compile through `ccache` (visible in
+the `make run` build log as `ccache g++ ...`). That comes from how
+*this particular* Verilator binary was built/configured, not from
+anything in this project's Makefile -- a different Verilator install
+without `ccache` available will just call `g++` directly and build fine
+either way.
+
+**Vivado (xsim) is the one genuinely unverified piece.** There is no
+Vivado install in this development environment, so `sim/vivado/run_vivado.sh`
+has never actually been run (see the "Running in Vivado" section below
+for the specific points to double-check -- DPI-C via `xsc`, the
+`build_rom()` elaboration pattern, and exit-code propagation from
+`$fatal`). Everything else in this repo -- RTL, testbench, golden model,
+Verilator flow -- has been directly built and run, repeatedly, in this
+environment, including from a from-scratch clone in an unrelated
+directory.
+
 ## Running in Verilator
 
 ```sh
