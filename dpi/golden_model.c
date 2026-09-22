@@ -18,11 +18,14 @@
 extern "C" {
 #endif
 
-static const int32_t A[4][4] = {
-    {-128,  127,    3,   -1},
-    {  64,  -64,    0,  127},
-    { -17,   17, -128,   50},
-    {   1,   -1,    5, -128}
+/*
+ * A_FLAT is pulled in from ../common/matrix_a.inc via #include -- the
+ * SAME file rtl/da_matvec_mult.sv pulls in via `include -- so the
+ * matrix is written down exactly once for the whole project. Row r,
+ * column c is at flat index r*4+c.
+ */
+static const int32_t A_FLAT[16] = {
+#include "../common/matrix_a.inc"
 };
 
 void golden_matvec(int8_t x0, int8_t x1, int8_t x2, int8_t x3,
@@ -38,7 +41,7 @@ void golden_matvec(int8_t x0, int8_t x1, int8_t x2, int8_t x3,
     for (r = 0; r < 4; r++) {
         int32_t sum = 0;
         for (c = 0; c < 4; c++) {
-            sum += A[r][c] * x[c];
+            sum += A_FLAT[r*4+c] * x[c];
         }
         *y[r] = sum;
     }

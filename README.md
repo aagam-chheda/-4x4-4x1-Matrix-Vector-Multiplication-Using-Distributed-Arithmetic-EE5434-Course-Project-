@@ -11,9 +11,15 @@ A = [ -128,  127,    3,   -1
          1,   -1,    5, -128 ]
 ```
 
+The matrix `A` is written down in exactly one place --
+[`common/matrix_a.inc`](common/matrix_a.inc) -- and pulled into both the RTL
+and the golden model at compile time (see "Single source of truth for A"
+below). Edit it there; nothing else needs to change.
+
 ## Directory layout
 
 ```
+common/ matrix_a.inc        - single source of truth for matrix A (see below)
 rtl/    da_matvec_mult.sv   - synthesizable DUT
 dpi/    golden_model.c      - DPI-C golden reference model (y = A*x in C)
 tb/     da_matvec_tb.sv     - self-checking testbench + scoreboard
@@ -82,6 +88,39 @@ README says so explicitly rather than silently implying otherwise).
   register: `done` already tells the receiver exactly which cycle the
   (already-stable) accumulator value became valid, so an extra register
   would only add a cycle of latency without adding safety.
+
+### Single source of truth for A
+
+`A` needs to be written down twice: once as ROM source data for the RTL,
+once as the reference computation in the golden model. Keeping those two
+copies in sync by hand would be a real risk (a typo in one and not the
+other would silently weaken the whole verification setup, since the
+scoreboard would then be comparing two *different* matrices instead of two
+independent implementations of the *same* one). Instead, both files pull
+the values from one place, [`common/matrix_a.inc`](common/matrix_a.inc): a
+flat, row-major list of 16 signed integer literals with no
+language-specific syntax around it.
+
+- `rtl/da_matvec_mult.sv` pulls it in with SystemVerilog's `` `include ``
+  into `localparam int signed A_FLAT [16] = '{ ... };`
+- `dpi/golden_model.c` pulls it in with C's `#include` into
+  `static const int32_t A_FLAT[16] = { ... };`
+
+Both are plain textual-substitution preprocessor directives, so the same
+file is valid, unmodified, inside either language's initializer-list
+syntax. Editing `common/matrix_a.inc` and rebuilding is all that's needed
+for the change to reach both the DA ROMs and the golden model -- verified
+in this environment by swapping in an unrelated test matrix, rebuilding,
+and confirming the regression still passes 5005/5005 against the *new*
+values (both sides picked it up), then restoring the original matrix and
+confirming a clean 5005/5005 pass again.
+
+One portability wrinkle: unlike C's `#include "..."`, which searches
+relative to the including source file by default, SystemVerilog's
+`` `include `` is resolved against the tool's `-I`/`-i` search path. So the
+RTL uses a bare filename (`` `include "matrix_a.inc" ``), and
+`sim/verilator/Makefile` passes `-I../../common` / `run_vivado.sh` passes
+`xvlog -i ../../../common` to point at it.
 
 ### Design bug found & fixed during verification
 

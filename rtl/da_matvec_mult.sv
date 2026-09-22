@@ -45,18 +45,25 @@ module da_matvec_mult #(
 );
 
     // ------------------------------------------------------------------
-    // Fixed coefficient matrix (compile-time constant)
+    // Fixed coefficient matrix (compile-time constant).
+    //
+    // Pulled in from common/matrix_a.inc via `include -- the SAME file
+    // dpi/golden_model.c pulls in via #include -- so the matrix is
+    // written down exactly once; editing common/matrix_a.inc updates
+    // both the RTL's DA ROMs and the golden model on the next build,
+    // with nothing else to keep in sync by hand.
     // ------------------------------------------------------------------
-    localparam int signed A_MAT [N][N] = '{
-        '{-128,  127,    3,   -1},
-        '{  64,  -64,    0,  127},
-        '{ -17,   17, -128,   50},
-        '{   1,   -1,    5, -128}
+    // NOTE: `include is resolved against the invoking tool's -I search
+    // path (not source-relative, unlike C's #include), so this uses a
+    // bare filename -- both sim/verilator/Makefile and
+    // sim/vivado/run_vivado.sh pass -I/-i pointing at common/.
+    localparam int signed A_FLAT [N*N] = '{
+`include "matrix_a.inc"
     };
 
     // ------------------------------------------------------------------
     // DA ROM generation: for each row, a 16-entry table of subset sums.
-    // ROM[row][addr] = sum over i of (addr[i] ? A_MAT[row][i] : 0)
+    // ROM[row][addr] = sum over i of (addr[i] ? A_FLAT[row*N+i] : 0)
     //
     // NOTE (Verilator/Vivado portability): this uses an automatic function
     // returning an unpacked array, invoked at elaboration time with a
@@ -75,7 +82,7 @@ module da_matvec_mult #(
         for (int addr = 0; addr < 2**N; addr++) begin
             sum = 0;
             for (int i = 0; i < N; i++) begin
-                if (addr[i]) sum += A_MAT[row][i];
+                if (addr[i]) sum += A_FLAT[row*N+i];
             end
             r[addr] = RW'(sum);
         end

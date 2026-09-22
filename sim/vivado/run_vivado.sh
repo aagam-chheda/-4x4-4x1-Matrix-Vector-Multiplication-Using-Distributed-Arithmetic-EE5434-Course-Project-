@@ -26,7 +26,9 @@ echo "== Compiling DPI-C golden model with xsc =="
 xsc ../../../dpi/golden_model.c -o golden_model
 
 echo "== Compiling SystemVerilog sources with xvlog =="
-xvlog --sv -f ../filelist.f
+# -i points xvlog's `include search path at common/matrix_a.inc (the
+# single source of truth for matrix A, shared with the DPI-C golden model).
+xvlog --sv -i ../../../common -f ../filelist.f
 
 echo "== Elaborating with xelab (linking DPI-C shared lib) =="
 xelab da_matvec_tb -sv_lib golden_model -s da_matvec_tb_sim
