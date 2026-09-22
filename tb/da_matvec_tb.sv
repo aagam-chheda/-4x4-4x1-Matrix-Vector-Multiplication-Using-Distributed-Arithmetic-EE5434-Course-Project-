@@ -387,6 +387,7 @@ module da_matvec_tb;
     initial begin
         int r, ch, b, m, val;
         int seed;
+        int seed_reseed_unused;
         logic signed [XW-1:0] rx0, rx1, rx2, rx3;
         logic signed [XW-1:0] wv0, wv1, wv2, wv3;
         logic signed [XW-1:0] cv0, cv1, cv2, cv3;
@@ -394,7 +395,15 @@ module da_matvec_tb;
 
         if (!$value$plusargs("SEED=%d", seed)) seed = 32'hDA5EED;
         $display("Random seed = %0d (override with +SEED=<n> for a fresh sequence)", seed);
-        void'($urandom(seed));
+        // Reseed via a genuine assignment (RHS is unambiguously a
+        // function call), not `void'($urandom(seed));` or `$srandom(seed);`
+        // as a bare statement -- confirmed against real runs that neither
+        // of those two forms is portable: Vivado 2024.2's xsim rejects
+        // $urandom(seed) called as a bare statement ("urandom system task
+        // is not supported"), and this Verilator build doesn't implement
+        // $srandom at all ("Unsupported or unknown PLI call"). Assigning
+        // the (unused) return value works on both.
+        seed_reseed_unused = $urandom(seed);
 
         rst_n = 1'b0;
         start = 1'b0;
