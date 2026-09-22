@@ -8,7 +8,6 @@ sim/verilator/coverage.dat
 *.fst.hier
 
 # --- Vivado / xsim ---
-sim/vivado/xsim_work/
 sim/vivado/.Xil/
 sim/vivado/xsim.dir/
 *.jou
