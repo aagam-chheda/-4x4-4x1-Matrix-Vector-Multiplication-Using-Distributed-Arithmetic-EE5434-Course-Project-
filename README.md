@@ -140,7 +140,8 @@ it did, on the very first regression run.
 
 The design intent here is adversarial: every test category below was
 chosen to target a specific class of bug, not just to demonstrate the
-happy path. **Total: 11,113 checks**, all passing.
+happy path. **Total: 408,425 checks**, all passing (confirmed in this
+environment: ~2.2s of actual simulation time under Verilator).
 
 - **Golden model** (`dpi/golden_model.c`): plain C, `y = A*x` for signed
   8-bit inputs against the same constant `A`. No `svdpi.h` dependency (the
@@ -182,9 +183,47 @@ happy path. **Total: 11,113 checks**, all passing.
   unaffected); an async `rst_n` injected mid-computation (confirms
   `busy`/`done` cleanly deassert and a following computation still
   produces a correct, golden-model-checked result).
-- **Exhaustive single-channel sweep** (1024 = 4 x 256): every signed
+- **Exhaustive single-channel sweep** (1,024 = 4 x 256): every signed
   8-bit value on one input channel at a time, others held at 0. Not
-  random -- deterministically exhaustive per channel.
+  random -- deterministically exhaustive per channel. Exhaustive per
+  channel, but *not* per combination -- that gap is closed by the next
+  two categories.
+- **Exhaustive pairwise sweep** (393,216 = 6 pairs x 256 x 256): every
+  one of the 6 unordered pairs of input channels, swept over the full
+  256x256 combinations of values on that pair (other two channels held
+  at 0). This is the category that actually closes the gap the
+  single-channel sweep leaves open: a bug in how one channel's bits map
+  to the shared DA address (exactly the class of bug the mutation-testing
+  writeup below describes catching only by luck, via the bit-position
+  walk) is *guaranteed* to be caught here, not just probabilistically --
+  confirmed by re-running that same mutant against the expanded suite:
+  337,564 of 408,425 checks fail, tens of thousands of them from the
+  pairwise sweep alone for the corrupted channel pair.
+- **Exhaustive curated 4-way Cartesian product** (4,096 = 8^4): full
+  combinations, all four channels varying at once, over 8 "interesting"
+  values (`-128, -127, -1, 0, 1, 64, 65, 127` -- both extremes,
+  near-extremes on each side, zero, +/-1, and a non-corner adjacent pair
+  to catch carry-propagation-style bugs away from the extremes). Where
+  the pairwise sweep guarantees 2-way coverage across the full value
+  range, this guarantees full 4-way coverage for the values a bug is
+  statistically most likely to hide in.
+- **Protocol/handshake invariant monitor**: a separate, always-on
+  checker (independent of the scoreboard's output-correctness checks)
+  that verifies the DUT's internal timing *contract* holds on literally
+  every clock cycle of the entire regression, not just the specific
+  cycles the control-robustness tests above happen to probe: `busy` and
+  `done` are never simultaneously high; `done` is exactly a 1-cycle
+  pulse; `busy` is asserted for exactly 8 consecutive cycles per
+  computation (not 7, not 9); and `y0..y3` hold their value from the
+  `done` cycle until the next computation's load cycle (the "holds until
+  next start" contract from the interface documentation, actually
+  checked rather than assumed). Deliberately plain procedural checks
+  (not `assert property` with temporal operators) -- SVA support has
+  historically been the kind of SystemVerilog feature that varies
+  between simulators, and this project already hit two real portability
+  surprises with other features this session; plain `always`-block
+  checks are the same technique already proven portable against a real
+  Verilator + Vivado 2024.2 run.
 - **Constrained-random regression** (10,000): each element drawn with a
   3-tier bias -- 30% from an exact/near-extreme literal set
   (`-128,-127,-126,127,126,125,-1,0,1,2,-2`), 20% "boundary jitter" (a
@@ -226,16 +265,18 @@ happy path. **Total: 11,113 checks**, all passing.
   paths, and all 16/16 ROM addresses.
 - Additionally, `make coverage` under `sim/verilator/` runs a Verilator
   `--coverage` (line/toggle/branch) build for a supplementary quantitative
-  report. Result in this environment: 96.6% toggle, 75.9% branch, 100%
-  line coverage on every RTL line that executes at simulation time. The
-  only 0%-hit RTL lines are inside `build_rom()`, the elaboration-time
-  function that constant-folds the ROM tables into `localparam`s -- it
-  runs once during compile-time elaboration, not during simulation, so it
-  correctly shows no simulation-time hits; this is expected, not a
-  coverage hole. On the testbench side, the only 0%-hit lines are
-  failure-diagnostic branches (`$display("FAIL...")`, timeout guards) that
-  by construction only execute when something is actually broken -- a
-  healthy shape for a report from an all-passing run, not a gap.
+  report. Result in this environment: 97.0% toggle, 75.0% branch, and
+  every RTL line that executes at simulation time covered (12/12 lines
+  outside `build_rom()`). The only 0%-hit RTL lines (9 of them) are all
+  inside `build_rom()`, the elaboration-time function that constant-folds
+  the ROM tables into `localparam`s -- it runs once during compile-time
+  elaboration, not during simulation, so it correctly shows no
+  simulation-time hits; this is expected, not a coverage hole. On the
+  testbench side, the 0%-hit lines are failure-diagnostic branches
+  (`$display("FAIL...")`, timeout guards, the new protocol monitor's
+  violation-reporting branches) that by construction only execute when
+  something is actually broken -- a healthy shape for a report from an
+  all-passing run, not a gap.
 
 ### Mutation testing: does this suite actually catch bugs?
 
@@ -246,21 +287,31 @@ this is a one-time check performed during development):
 
 1. **Reintroduced the historical accumulator-reset bug** (forced
    `acc0_shifted` to always shift the old accumulator, even on the
-   sign-bit cycle, for row 0 only). Caught immediately: 11,061/11,113
-   checks failed, starting from the third directed test, with `y0`
-   specifically wrong while `y1..y3` stayed correct -- confirming the
-   scoreboard's per-row comparison catches even a single-row-only
-   corruption, not just gross across-the-board breakage.
+   sign-bit cycle, for row 0 only). Caught immediately and overwhelmingly:
+   407,941/408,425 checks failed against the current, expanded suite
+   (11,061/11,113 failed when this was first tried, before the pairwise/
+   curated/protocol-monitor categories existed), with `y0` specifically
+   wrong while `y1..y3` stayed correct -- confirming the scoreboard's
+   per-row comparison catches even a single-row-only corruption, not just
+   gross across-the-board breakage.
 2. **Swapped the address-bit wiring for input channels 2 and 3** in the
    steady-state (post-cycle-0) address mux -- a "miswired ROM address
    bus" class of bug. This one is instructive: `all-neg128` and
    `all-pos127` (x2 == x3 in both) **did not detect it at all**, since
    swapping which channel feeds which address bit is invisible when both
-   channels carry the same value. It was caught immediately by the
-   per-channel bit-position walk (`bitwalk-ch2-*`, `bitwalk-ch3-*`) and
-   the boundary permutations, which is exactly why those categories were
-   added -- a test suite built only from same-value corner cases would
-   have shipped this bug silently.
+   channels carry the same value. At the time this was first tried (11,113
+   total checks, no pairwise sweep yet), it was caught by the per-channel
+   bit-position walk (`bitwalk-ch2-*`, `bitwalk-ch3-*`) and the boundary
+   permutations -- which is exactly why those categories were added, but
+   it's worth being honest that catching it there was closer to "the
+   specific chosen vectors happened to differ between ch2 and ch3" than
+   to a structural guarantee. **Re-run against the expanded 408,425-check
+   suite** (with the exhaustive pairwise sweep added) for a stronger
+   check: 337,564/408,425 checks now fail, tens of thousands of them from
+   the ch2/ch3 pairwise sweep alone. That's the actual point of that
+   category -- it doesn't just happen to catch this class of bug, it's
+   mathematically guaranteed to for any pair of channels, since every one
+   of the 65,536 combinations for that pair is checked.
 
 ## Portability / requirements
 
@@ -310,10 +361,13 @@ either way.
 development environment -- over the course of the same project, on the
 user's own machine), passes `REGRESSION PASSED: 11113/11113 checks
 passed`, identical to the Verilator result including the same default
-seed. Getting there surfaced and fixed three real, simulator-specific
-issues (a `filelist.f` path-resolution bug, an `$urandom(seed)`
-statement-form rejection, and a `$fatal`-doesn't-affect-exit-code
-quirk) -- see "Running in Vivado" below for the full account.
+seed (that figure predates the testbench expansion to 408,425 checks --
+see "Testbench / verification" above -- which has been verified on
+Verilator but not yet re-run against Vivado or Xcelium). Getting there
+surfaced and fixed four real, simulator-specific issues (a `filelist.f`
+path-resolution bug, an `$urandom(seed)` statement-form rejection, a
+`$fatal`-doesn't-affect-exit-code quirk, and an unquoted-`-testplusarg`
+parse failure) -- see "Running in Vivado" below for the full account.
 `run_vivado.sh` (the Linux-native counterpart) carries the same fixes but
 hasn't itself been run against a real install.
 
@@ -338,7 +392,7 @@ make clean
 with `verilator --binary --timing`, which lets Verilator auto-generate the
 C++ main and drive `$finish`/`$fatal` directly -- no hand-written C++
 harness needed. Confirmed working in this environment (Verilator 5.053):
-**11,113/11,113 scoreboard checks pass**, full cycle/control-path/address
+**408,425/408,425 scoreboard checks pass**, full cycle/control-path/address
 coverage (16/16 ROM addresses), exit code 0 on pass / 1 on any injected
 failure (see "Mutation testing" above).
 
@@ -424,6 +478,14 @@ result, including reproducing the exact same default seed (`14311149`)
 and getting the exact same pass count from it, which is itself a good
 sanity check that the DPI golden model and the RTL behave identically
 under both simulators.
+
+*(That 11,113 figure is from before the testbench was expanded with the
+exhaustive pairwise/curated-4-way sweeps and the protocol monitor --
+see "Testbench / verification" above for the current 408,425-check
+total. That expansion has been verified on Verilator but **not yet
+re-run against Vivado or Xcelium** -- do that next if you want the
+current full suite confirmed on Vivado too; the same `run_vivado.bat`
+usage applies unchanged, it'll just take a few seconds longer.)*
 
 Getting there surfaced four real, simulator-specific issues, each now
 fixed in the committed source (not worked around by disabling anything):

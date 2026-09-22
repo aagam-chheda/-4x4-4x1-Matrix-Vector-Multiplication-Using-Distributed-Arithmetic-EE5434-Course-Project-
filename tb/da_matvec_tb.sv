@@ -103,9 +103,9 @@ module da_matvec_tb;
     // ------------------------------------------------------------------
     // Scoreboard bookkeeping
     // ------------------------------------------------------------------
-    int total_count = 0;
-    int pass_count  = 0;
-    int fail_count  = 0;
+    int total_count;
+    int pass_count;
+    int fail_count;
 
     // Cycle-path coverage: cycle_seen[0] is the sign/subtract cycle,
     // cycle_seen[1..7] are the shift-add cycles. sub_seen tracks whether
@@ -128,6 +128,93 @@ module da_matvec_tb;
             cycle_seen[cyc_idx] <= 1'b1;
             sub_seen[dut.sub]   <= 1'b1;
             addr_seen[dut.addr] <= 1'b1;
+        end
+    end
+
+    // ------------------------------------------------------------------
+    // Protocol/handshake invariant monitor: independent of whether any
+    // particular *result* is numerically correct, these check that the
+    // DUT's internal timing contract (as documented in rtl/da_matvec_mult.sv
+    // and the README's "Handshake" section) actually holds on every single
+    // cycle of every test in the whole regression, not just the specific
+    // cycles the directed control-robustness tests happen to probe.
+    // Deliberately plain procedural checks (not `assert property` with
+    // temporal operators) -- SVA support has historically been the kind of
+    // thing that varies between simulators, and this project has already
+    // hit two real portability surprises this way with other SV features;
+    // plain always-block checks are the same technique already proven
+    // portable (Verilator + real Vivado 2024.2) by the coverage monitor
+    // above.
+    //
+    //   1. busy and done are never simultaneously high.
+    //   2. done is exactly a 1-cycle pulse (never 2+ cycles in a row).
+    //   3. busy is asserted for exactly 8 consecutive cycles per
+    //      computation -- not 7, not 9.
+    //   4. y0..y3 hold their value from the done cycle until the next
+    //      load cycle (i.e. the "holds until next start" contract in the
+    //      interface documentation actually holds, not just "probably
+    //      does because nothing changes it").
+    int  busy_run_length;
+    logic prev_busy, prev_done;
+    logic monitoring_hold;
+    logic signed [YW-1:0] held_y0, held_y1, held_y2, held_y3;
+
+    initial begin
+        busy_run_length = 0;
+        prev_busy       = 1'b0;
+        prev_done       = 1'b0;
+        monitoring_hold = 1'b0;
+    end
+
+    // Async-sensitive to rst_n (matching the DUT's own reset style) to
+    // avoid a sync/async mismatch on the same net between this block and
+    // the DUT's always_ff.
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            busy_run_length <= 0;
+            prev_busy       <= 1'b0;
+            prev_done       <= 1'b0;
+            monitoring_hold <= 1'b0;
+        end else begin
+            if (busy && done) begin
+                fail_count  <= fail_count + 1;
+                total_count <= total_count + 1;
+                $display("FAIL[protocol] busy and done both high simultaneously at time %0t", $time);
+            end
+
+            if (prev_done && done) begin
+                fail_count  <= fail_count + 1;
+                total_count <= total_count + 1;
+                $display("FAIL[protocol] done stayed high for more than 1 cycle at time %0t", $time);
+            end
+
+            if (busy) begin
+                busy_run_length <= busy_run_length + 1;
+            end else if (prev_busy) begin
+                if (busy_run_length != 8) begin
+                    fail_count  <= fail_count + 1;
+                    total_count <= total_count + 1;
+                    $display("FAIL[protocol] busy was high for %0d cycles (expected exactly 8) ending at time %0t",
+                              busy_run_length, $time);
+                end
+                busy_run_length <= 0;
+            end
+
+            if (done) begin
+                held_y0 <= y0; held_y1 <= y1; held_y2 <= y2; held_y3 <= y3;
+                monitoring_hold <= 1'b1;
+            end else if (dut.load) begin
+                monitoring_hold <= 1'b0;
+            end else if (monitoring_hold) begin
+                if (y0 !== held_y0 || y1 !== held_y1 || y2 !== held_y2 || y3 !== held_y3) begin
+                    fail_count  <= fail_count + 1;
+                    total_count <= total_count + 1;
+                    $display("FAIL[protocol] y0..y3 changed while idle (must hold until next start) at time %0t", $time);
+                end
+            end
+
+            prev_busy <= busy;
+            prev_done <= done;
         end
     end
 
@@ -353,6 +440,17 @@ module da_matvec_tb;
         '{-127, 126, -128, 127}
     };
 
+    // All 6 unordered pairs of the 4 input channels, for the exhaustive
+    // pairwise sweep below.
+    localparam int PAIR_A[6] = '{0, 0, 0, 1, 1, 2};
+    localparam int PAIR_B[6] = '{1, 2, 3, 2, 3, 3};
+
+    // 8 "interesting" values (both extremes, near-extremes on each side,
+    // zero, +/-1, and a non-corner adjacent pair 64/65) for the exhaustive
+    // curated 4-way Cartesian product below.
+    localparam logic signed [XW-1:0] CURATED_VALS[8] =
+        '{-8'sd128, -8'sd127, -8'sd1, 8'sd0, 8'sd1, 8'sd64, 8'sd65, 8'sd127};
+
     // ------------------------------------------------------------------
     // Biased random x generator, 3-tier:
     //   30% - exact/near-extreme literal set
@@ -392,6 +490,9 @@ module da_matvec_tb;
         logic signed [XW-1:0] wv0, wv1, wv2, wv3;
         logic signed [XW-1:0] cv0, cv1, cv2, cv3;
         logic signed [XW-1:0] sv0, sv1, sv2, sv3;
+        int p, ca, cb, va, vb;
+        logic signed [XW-1:0] pv0, pv1, pv2, pv3;
+        int i0, i1, i2, i3;
 
         if (!$value$plusargs("SEED=%d", seed)) seed = 32'hDA5EED;
         $display("Random seed = %0d (override with +SEED=<n> for a fresh sequence)", seed);
@@ -408,6 +509,9 @@ module da_matvec_tb;
         rst_n = 1'b0;
         start = 1'b0;
         x0 = '0; x1 = '0; x2 = '0; x3 = '0;
+        total_count = 0;
+        pass_count  = 0;
+        fail_count  = 0;
         for (int i = 0; i < 8; i++) cycle_seen[i] = 1'b0;
         for (int i = 0; i < 2; i++) sub_seen[i] = 1'b0;
         for (int i = 0; i < 16; i++) addr_seen[i] = 1'b0;
@@ -491,6 +595,55 @@ module da_matvec_tb;
                     3: sv3 = XW'(val);
                 endcase
                 apply_and_check(sv0, sv1, sv2, sv3, $sformatf("sweep-ch%0d-val%0d", ch, val));
+            end
+        end
+
+        // The single-channel sweep above is exhaustive per channel but
+        // never tests *combinations* -- exactly the class of bug the
+        // mutation-testing writeup in the README describes catching only
+        // by luck (a channel-address-swap mutant that the all-same-value
+        // directed tests completely missed). This sweep closes that gap
+        // for real: every pair of channels, every one of the full
+        // 256x256 combinations, guaranteed rather than probabilistic.
+        $display("=== Exhaustive pairwise sweep: 6 pairs x 256 x 256 = 393216 vectors ===");
+        for (p = 0; p < 6; p++) begin
+            ca = PAIR_A[p];
+            cb = PAIR_B[p];
+            for (va = -128; va <= 127; va++) begin
+                for (vb = -128; vb <= 127; vb++) begin
+                    pv0 = '0; pv1 = '0; pv2 = '0; pv3 = '0;
+                    case (ca)
+                        0: pv0 = XW'(va);
+                        1: pv1 = XW'(va);
+                        2: pv2 = XW'(va);
+                        3: pv3 = XW'(va);
+                    endcase
+                    case (cb)
+                        0: pv0 = XW'(vb);
+                        1: pv1 = XW'(vb);
+                        2: pv2 = XW'(vb);
+                        3: pv3 = XW'(vb);
+                    endcase
+                    apply_and_check(pv0, pv1, pv2, pv3,
+                                     $sformatf("pairwise-ch%0d-ch%0d-va%0d-vb%0d", ca, cb, va, vb));
+                end
+            end
+        end
+
+        // Full 4-way combinations (not just pairs, not just corners) for
+        // a curated set of the values most likely to expose a bug: both
+        // extremes, near-extremes on each side, zero, +/-1, and a
+        // non-corner adjacent pair (64/65) to catch carry-propagation
+        // bugs that only show up away from the extremes.
+        $display("=== Exhaustive curated 4-way Cartesian product: 8^4 = 4096 vectors ===");
+        for (i0 = 0; i0 < 8; i0++) begin
+            for (i1 = 0; i1 < 8; i1++) begin
+                for (i2 = 0; i2 < 8; i2++) begin
+                    for (i3 = 0; i3 < 8; i3++) begin
+                        apply_and_check(CURATED_VALS[i0], CURATED_VALS[i1], CURATED_VALS[i2], CURATED_VALS[i3],
+                                         $sformatf("curated4-%0d-%0d-%0d-%0d", i0, i1, i2, i3));
+                    end
+                end
             end
         end
 
