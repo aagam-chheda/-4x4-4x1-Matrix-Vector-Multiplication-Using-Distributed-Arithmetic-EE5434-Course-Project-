@@ -200,9 +200,20 @@ happy path. **Total: 11,113 checks**, all passing.
 - **Scoreboard**: on every `done` pulse, compares all four DUT outputs
   against the DPI golden model for the same inputs, tallies pass/fail, and
   prints a final summary. Any mismatch -- or incomplete coverage (see
-  below) -- triggers `$fatal`, which gives a nonzero process exit code for
-  CI use (verified in this environment: a standalone `$fatal` test under
-  `verilator --binary` returns exit code 1).
+  below) -- triggers `$fatal`. Whether that reliably gives a nonzero
+  *process* exit code turns out to be simulator-dependent, confirmed the
+  hard way: a standalone `$fatal` test under `verilator --binary` returns
+  exit code 1 as expected, but the identical standalone test under Vivado
+  2024.2's `xsim -R` returns exit code **0** even though the log correctly
+  shows `Fatal: forced failure` -- Vivado's `$fatal` triggers `$finish`
+  internally rather than aborting the process. Because of this, none of
+  the three simulation wrapper scripts (`sim/verilator/Makefile`,
+  `sim/vivado/run_vivado.sh`/`.bat`, `sim/xcelium/run_xcelium.sh`) trust
+  the simulator's raw exit code for the actual regression run -- the
+  Vivado and Xcelium scripts instead capture the run's log and grep it
+  for `REGRESSION PASSED`, setting their own exit code from that
+  (Verilator's raw exit code is fine as-is and used directly, since it's
+  the one actually confirmed reliable).
 - **Cycle/control-path/address coverage**: rather than depend on
   simulator-specific functional-coverage tooling (which could behave
   differently between Verilator and Vivado), the testbench directly
@@ -294,16 +305,25 @@ anything in this project's Makefile -- a different Verilator install
 without `ccache` available will just call `g++` directly and build fine
 either way.
 
-**Vivado (xsim) and Cadence Xcelium are genuinely unverified pieces.**
-There is no Vivado or Xcelium install in this development environment, so
-neither `sim/vivado/run_vivado.sh` nor `sim/xcelium/run_xcelium.sh` has
-ever actually been run (see their respective "Running in ..." sections
-below for the specific points to double-check on each -- DPI-C
-compilation, the `build_rom()` elaboration pattern, and exit-code
-propagation from `$fatal`, in each case). Everything else in this repo --
-RTL, testbench, golden model, Verilator flow -- has been directly built
-and run, repeatedly, in this environment, including from a from-scratch
-clone in an unrelated directory.
+**Vivado (Windows, 2024.2) is now confirmed working end-to-end:**
+`run_vivado.bat`, run against a real Vivado install (not in this
+development environment -- over the course of the same project, on the
+user's own machine), passes `REGRESSION PASSED: 11113/11113 checks
+passed`, identical to the Verilator result including the same default
+seed. Getting there surfaced and fixed three real, simulator-specific
+issues (a `filelist.f` path-resolution bug, an `$urandom(seed)`
+statement-form rejection, and a `$fatal`-doesn't-affect-exit-code
+quirk) -- see "Running in Vivado" below for the full account.
+`run_vivado.sh` (the Linux-native counterpart) carries the same fixes but
+hasn't itself been run against a real install.
+
+**Cadence Xcelium remains the one genuinely unverified piece.** No
+Xcelium install has been available to test against (the intended one was
+down); `sim/xcelium/run_xcelium.sh` was written directly against
+documented `xrun` usage and, based on what the Vivado run taught us,
+now defensively greps its own log rather than trusting `xrun`'s exit
+code -- see "Running in Cadence Xcelium" below for the specific points
+still worth double-checking on a real run.
 
 ## Running in Verilator
 
@@ -381,31 +401,64 @@ relocating the working directory; Xilinx's own build artifacts
 (`xsim.dir/`, `.Xil/`, `golden_model.a`) are left in `sim/vivado/` and
 gitignored instead.
 
-**Status as of the most recent real run (Vivado 2024.2, Windows,
-`run_vivado.bat`):** `xsc` succeeds -- Vivado bundles its own MinGW gcc
-for DPI-C compilation on Windows, so (contrary to an earlier guess in this
-README) a separate MSVC/Visual Studio install is **not** required.
-`xvlog`/`xelab`/`xsim` have not been reached yet due to the path bug above
-(now fixed, not yet re-run). Before treating a Vivado run as full
-sign-off, still double-check:
+### Confirmed: full pass on real Vivado 2024.2 (Windows)
 
-- **`$fatal`/exit-code propagation from `xsim -R`**: assumed to behave
-  like other simulators (nonzero process exit on `$fatal`), not yet
-  confirmed against a real run.
+`run_vivado.bat` has been run to completion against a real Vivado 2024.2
+install on Windows, via WSL for the git side and a native Windows Command
+Prompt for Vivado itself (see the note above about why: Vivado's tools
+are Windows binaries and don't run under WSL bash). Result:
+**`REGRESSION PASSED: 11113/11113 checks passed`**, all 8 cycles/both
+control paths/16 ROM addresses covered -- identical to the Verilator
+result, including reproducing the exact same default seed (`14311149`)
+and getting the exact same pass count from it, which is itself a good
+sanity check that the DPI golden model and the RTL behave identically
+under both simulators.
+
+Getting there surfaced three real, simulator-specific issues, each now
+fixed in the committed source (not worked around by disabling anything):
+
+1. **The `filelist.f` path-resolution bug** described above (`xvlog`
+   resolves relative to the invocation directory, not the `-f` file's own
+   location) -- `xsc` succeeded first (confirming, contrary to an earlier
+   guess in this README, that Vivado's bundled MinGW gcc handles the
+   DPI-C compile fine on Windows with **no** separate MSVC/Visual Studio
+   install needed), then `xvlog` failed with
+   `Can not find file: ../../rtl/da_matvec_mult.sv`.
+2. **`void'($urandom(seed));`**, used once at the top of the testbench to
+   deterministically seed the CRV regression, was rejected by `xelab`
+   with `urandom system task is not supported` -- Vivado's xsim doesn't
+   accept `$urandom(seed)` called as a bare statement (`void'`-cast or
+   not). The IEEE-designated alternative, `$srandom(seed);`, turned out
+   to have the opposite problem: this Verilator build doesn't implement
+   it at all (`Unsupported or unknown PLI call`). Fixed by assigning the
+   return value to a genuine (otherwise-unused) variable instead of
+   discarding it via a bare statement -- unambiguously a function-call
+   expression, which both tools accept.
+3. **`xsim -R`'s own process exit code doesn't reflect `$fatal`** -- see
+   the exit-code note in "Testbench / verification" above. Fixed in both
+   `run_vivado.sh` and `run_vivado.bat` by grepping the run's own log for
+   `REGRESSION PASSED` and setting the script's exit code from that,
+   rather than trusting `xsim`'s.
+
+`run_vivado.sh` (the Linux-native path) has *not* itself been run against
+a real Vivado install -- only `run_vivado.bat` (Windows) has -- but it's
+the same sequence of commands with the same fixes applied, so the
+remaining risk there is narrower than before. Two points still worth
+double-checking if you hit something on that path specifically:
+
 - **`build_rom()`**: an `automatic` function with bounded `for` loops,
   returning an unpacked array type, called with a constant argument at
-  `localparam` elaboration time. Standard IEEE-1800, and supported by
-  Verilator (verified here), but if a specific Vivado `xvlog`/`xelab`
-  version rejects it, the mechanical fallback is to replace each
-  `localparam rom_t ROMn = build_rom(n);` with an explicit 16-entry `case`
-  statement per row (same subset-sum values, just spelled out instead of
-  computed) -- the values are already documented by the algorithm section
-  above and can be regenerated by running `build_rom()` logic by hand or
-  via the golden model.
+  `localparam` elaboration time. Standard IEEE-1800, and confirmed
+  working under both Verilator and Vivado 2024.2's `xvlog`/`xelab` (no
+  errors or warnings about it in the real Vivado run above) -- low risk
+  at this point, but the mechanical fallback (an explicit 16-entry `case`
+  statement per row) still applies if a different Vivado version ever
+  rejects it.
 - **Async reset (`rst_n`, active-low, asynchronous)**: used throughout;
-  standard synthesizable style in both tools for a small register-only
-  design, but flagged here since reset-style conventions can differ across
-  FPGA sign-off flows.
+  standard synthesizable style, and the real Vivado run above exercised
+  it correctly (including the mid-computation-reset robustness test),
+  but flagged here since reset-style conventions can differ across FPGA
+  sign-off flows if this RTL is ever pushed through actual synthesis.
 
 ## Running in Cadence Xcelium
 
@@ -428,6 +481,10 @@ xrun -sv -access +rwc -top da_matvec_tb \
      -l xcelium_work/xrun.log -R "$@"
 ```
 
+then greps `xcelium_work/xrun.log` for `REGRESSION PASSED` and sets its
+own exit code from that, rather than trusting `xrun`'s own exit code --
+see the note below on why.
+
 - `-incdir ../../common` gives `` `include "matrix_a.inc" `` a search path
   to resolve against, the same role `-I` plays for Verilator and `-i`
   plays for `xvlog` in the Vivado flow.
@@ -441,6 +498,12 @@ xrun -sv -access +rwc -top da_matvec_tb \
   arguments the script is called with (e.g. `+SEED=1234`) are forwarded
   straight through to the simulation as plusargs, same convention as the
   Verilator binary.
+- The testbench's RNG-reseed line (`seed_reseed_unused = $urandom(seed);`)
+  was reworked based on a real Vivado-specific rejection of the original
+  `void'($urandom(seed));` form (see "Running in Vivado" below) -- since
+  the fix lives in the shared `tb/da_matvec_tb.sv`, not a per-simulator
+  script, Xcelium gets the more portable form automatically, whatever its
+  own stance on the original form would have been.
 
 **This has not been run against a real Xcelium install while authoring
 this repo** (no Xcelium available in that environment) -- functional
@@ -458,12 +521,15 @@ double-check:
   or a C-vs-C++ language-mode mismatch rather than anything about the DPI
   function itself, given that the exact same C source already builds
   cleanly under Verilator (g++) as shown in this repo.
-- **`$fatal`/exit-code propagation from `xrun -R`**: assumed to behave
-  like other simulators (nonzero process exit on `$fatal`), but not
-  verified against a real Xcelium install. If a CI script needs to key
-  off the result and the exit code proves unreliable, `grep -q
-  "REGRESSION PASSED" xcelium_work/xrun.log` against the log is a safe
-  fallback (the exact same string Verilator prints on success).
+- **`$fatal`/exit-code propagation from `xrun -R`**: unverified against a
+  real Xcelium install, but *not* assumed to be fine anymore -- the
+  script already defensively greps `xcelium_work/xrun.log` for
+  `REGRESSION PASSED` rather than trusting `xrun`'s own exit code,
+  because that exact assumption was confirmed **wrong** for Vivado (its
+  `xsim -R` returns exit code 0 even when `$fatal` fired mid-run; see
+  "Running in Vivado" below). Xcelium may well propagate it correctly --
+  genuinely unknown either way -- but the log-based check is correct
+  regardless of which way that turns out.
 - **`build_rom()`**: the same `automatic`-function-returning-an-unpacked-
   array-at-elaboration-time pattern flagged in the Vivado section above.
   Cadence's SystemVerilog parser is generally considered very

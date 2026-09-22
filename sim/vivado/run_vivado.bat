@@ -23,6 +23,15 @@ REM Vivado's bundled MinGW gcc built golden_model.c fine, but xvlog then
 REM failed with "Can not find file: ../../rtl/da_matvec_mult.sv"). Xilinx's
 REM own build artifacts (xsim.dir\, .Xil\, golden_model.a, etc.) are left
 REM in this directory and gitignored, rather than relocated.
+REM
+REM IMPORTANT, confirmed against a real run: `xsim -R`'s own process exit
+REM code is 0 regardless of whether $fatal fired during simulation
+REM (checked directly with a standalone $fatal test: log correctly shows
+REM "Fatal: ...", but xsim still exits 0). So this script does NOT trust
+REM `xsim`'s exit code for the simulation-run step -- it captures the
+REM run's output to a log and searches it for "REGRESSION PASSED" itself,
+REM setting this script's own exit code accordingly. That's the reliable
+REM signal for CI use with Vivado.
 
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
@@ -44,12 +53,21 @@ call xelab da_matvec_tb -sv_lib golden_model -s da_matvec_tb_sim
 if errorlevel 1 goto :fail
 
 echo == Running with xsim (batch mode) ==
-call xsim da_matvec_tb_sim -R %*
-if errorlevel 1 goto :fail
+call xsim da_matvec_tb_sim -R %* > xsim_run.log 2>&1
+type xsim_run.log
 
+findstr /C:"REGRESSION PASSED" xsim_run.log >nul
+if errorlevel 1 (
+    echo.
+    echo == Vivado xsim run: FAILED or inconclusive ^("REGRESSION PASSED" not found in xsim_run.log^) ==
+    exit /b 1
+)
+
+echo.
+echo == Vivado xsim run: PASSED ^(confirmed via log content, not xsim's own exit code^) ==
 exit /b 0
 
 :fail
 echo.
-echo Build/elaborate/run failed -- see the xsc/xvlog/xelab/xsim output above.
+echo Build/elaborate failed -- see the xsc/xvlog/xelab output above.
 exit /b 1
