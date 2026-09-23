@@ -566,7 +566,7 @@ xrun -sv -access +rwc -top da_matvec_tb \
      -incdir ../../common -f filelist.f \
      ../../dpi/golden_model.c \
      -xmlibdirname xcelium_work/xcelium.d \
-     -l xcelium_work/xrun.log -R "$@"
+     -l xcelium_work/xrun.log "$@"
 ```
 
 then greps `xcelium_work/xrun.log` for `REGRESSION PASSED` and sets its
@@ -582,10 +582,19 @@ see the note below on why.
   `xsc` + `xelab -sv_lib`) -- the `extern "C"` guard already in
   `dpi/golden_model.c` (added for Verilator's C++-compiled-DPI behavior)
   keeps this path safe either way.
-- `-R` runs to completion in batch mode after elaboration; any extra
-  arguments the script is called with (e.g. `+SEED=1234`) are forwarded
-  straight through to the simulation as plusargs, same convention as the
-  Verilator binary.
+- No explicit run-control flag is needed for the one-shot flow: `xrun`
+  compiles, elaborates, and runs to completion by default when given HDL
+  sources directly on the command line. **Confirmed the hard way against
+  a real Xcelium 22.09-s003 run that `-R` here is actively wrong**, not
+  just unnecessary -- `-R` in this context means "skip straight to
+  running a previously-elaborated snapshot" (a separate 2-phase
+  workflow), not "run to completion after elaborating" the way Vivado's
+  `xsim -R` does. Combined with HDL sources and `-top` in the same
+  invocation, `xrun` warned `-TOP with -R option will be ignored` /
+  `HDL source files with -R option will be ignored`, then failed with
+  `NOSTUP` since no snapshot existed yet. Any extra arguments the script
+  is called with (e.g. `+SEED=1234`) are forwarded straight through to
+  the simulation as plusargs, same convention as the Verilator binary.
 - The testbench's RNG-reseed line (`seed_reseed_unused = $urandom(seed);`)
   was reworked based on a real Vivado-specific rejection of the original
   `void'($urandom(seed));` form (see "Running in Vivado" below) -- since
@@ -593,25 +602,28 @@ see the note below on why.
   script, Xcelium gets the more portable form automatically, whatever its
   own stance on the original form would have been.
 
-**This has not been run against a real Xcelium install while authoring
-this repo** (no Xcelium available in that environment) -- functional
-sign-off there was done exclusively with Verilator. This flow was written
-directly against standard, documented `xrun` usage, not copy-adapted from
-a working reference -- so before treating an Xcelium run as sign-off,
-double-check:
+**This has been run against a real Xcelium 22.09-s003 install; the first
+attempt failed on the `-R` issue described above (now fixed), and
+re-verification after that fix is in progress** -- this repo's earlier
+functional sign-off was exclusively via Verilator, and this section will
+be updated with a confirmed pass/fail once the fixed script has actually
+completed a run. Before treating a future Xcelium run as sign-off, still
+worth double-checking:
 
 - **DPI-C compiled directly by `xrun`**: the simplest and most commonly
   documented Xcelium DPI flow for plain scalar-argument functions (which
   is all `golden_matvec` uses -- `byte`/`int` DPI types, no `svdpi.h`
-  dependency), but not exercised here. If Xcelium's C compilation step
-  rejects it, check `xcelium_work/xrun.log` for the specific compiler
-  invocation/error first -- it's very likely a missing `-l`/library flag
-  or a C-vs-C++ language-mode mismatch rather than anything about the DPI
-  function itself, given that the exact same C source already builds
-  cleanly under Verilator (g++) as shown in this repo.
-- **`$fatal`/exit-code propagation from `xrun -R`**: unverified against a
-  real Xcelium install, but *not* assumed to be fine anymore -- the
-  script already defensively greps `xcelium_work/xrun.log` for
+  dependency), not yet confirmed either way (the run that would have
+  reached this step failed earlier, at the `-R`/elaboration-skip issue).
+  If Xcelium's C compilation step rejects it, check
+  `xcelium_work/xrun.log` for the specific compiler invocation/error
+  first -- it's very likely a missing `-l`/library flag or a C-vs-C++
+  language-mode mismatch rather than anything about the DPI function
+  itself, given that the exact same C source already builds cleanly
+  under Verilator (g++) and Vivado's bundled MinGW gcc.
+- **`$fatal`/exit-code propagation from `xrun`**: still unverified against
+  a real Xcelium install, but *not* assumed to be fine -- the script
+  already defensively greps `xcelium_work/xrun.log` for
   `REGRESSION PASSED` rather than trusting `xrun`'s own exit code,
   because that exact assumption was confirmed **wrong** for Vivado (its
   `xsim -R` returns exit code 0 even when `$fatal` fired mid-run; see

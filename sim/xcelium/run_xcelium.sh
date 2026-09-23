@@ -10,13 +10,17 @@
 # your site's Xcelium setup script -- site-specific, not something this
 # repo can set up for you).
 #
-# NOTE: this script has not been executed against a real Xcelium install
-# while authoring this repo (no Xcelium available in that environment) --
-# functional sign-off there was done with Verilator (see
-# sim/verilator/). Written directly against standard/documented `xrun`
-# usage. See README.md's "Running in Cadence Xcelium" section for the
-# specific points to double-check on first run, and report back anything
-# that needs adjusting.
+# NOTE: confirmed against a real Xcelium 22.09-s003 run that `-R` in a
+# single-shot invocation (compile+elaborate+run all in one xrun command)
+# does NOT mean "run to completion after elaborating" the way it does for
+# Vivado's `xsim -R` -- Xcelium's `-R` means "skip straight to running a
+# previously-elaborated snapshot", a separate 2-phase workflow. Combined
+# with HDL source files and -top in the same invocation, xrun warns
+# `-TOP with -R option will be ignored` / `HDL source files with -R
+# option will be ignored`, then fails with NOSTUP since no snapshot
+# exists yet. Fixed by dropping -R entirely: xrun compiles, elaborates,
+# and runs to completion by default when given HDL sources directly, with
+# no separate run-control flag needed for that one-shot flow.
 #
 # IMPORTANT, learned the hard way on the Vivado flow (see
 # sim/vivado/run_vivado.sh): do not assume a simulator's own process exit
@@ -44,7 +48,6 @@ xrun \
     ../../dpi/golden_model.c \
     -xmlibdirname "$WORK_DIR/xcelium.d" \
     -l "$WORK_DIR/xrun.log" \
-    -R \
     "$@" || true
 
 if grep -q "REGRESSION PASSED" "$WORK_DIR/xrun.log" 2>/dev/null; then
