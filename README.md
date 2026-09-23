@@ -310,15 +310,27 @@ make run_obc      # main regression against the OBC variant
 make run_equiv    # lockstep equivalence testbench
 ```
 
-Both were run on Verilator only. `sim/xcelium/run_xcelium.sh` and
-`sim/vivado/run_vivado.sh` / `.bat` accept a `MODE` environment variable
-(`orig` default, unchanged; `obc`; `equiv`), e.g. `MODE=obc
-./run_xcelium.sh` or, on Windows, `set MODE=obc` before `run_vivado.bat`
-(and `set MODE=` afterwards to return to the default). **These new modes
-have not been run on Vivado or Xcelium yet** -- the default `orig` path is
-behaviorally unchanged. One thing to watch when they are: the equivalence
-testbench overrides the `A_FLAT` array parameter per instance, which has
-been exercised on Verilator and Xcelium (via the demo) but never on Vivado.
+`sim/xcelium/run_xcelium.sh` and `sim/vivado/run_vivado.sh` / `.bat` accept
+a `MODE` environment variable (`orig` default, unchanged; `obc`; `equiv`).
+On Windows, `set MODE=obc` before `run_vivado.bat` (and `set MODE=`
+afterwards to return to the default). On the Xcelium server the login shell
+is `csh`, where the bash-style `MODE=obc ./run_xcelium.sh` prefix fails with
+"Command not found"; use `env MODE=obc ./run_xcelium.sh`, or
+`setenv MODE obc` / `unsetenv MODE`.
+
+Status by simulator:
+
+- **Verilator**: both pass (numbers above).
+- **Xcelium 22.09-s003**: both pass, with numbers identical to Verilator --
+  `MODE=obc`: 408,425/408,425 checks, 8/8 ROM addresses; `MODE=equiv`:
+  2,450,346/2,450,346 checks over the same 22,053,132 lockstep cycles, 0
+  errors. This also confirms Xcelium handles the equivalence testbench's
+  per-instance override of the `A_FLAT` array parameter across six
+  differently-configured module pairs in one simulation.
+- **Vivado**: the new modes have **not been run yet** (the default `orig`
+  path is behaviorally unchanged). The thing to watch there is the same
+  per-instance `A_FLAT` override in the equivalence testbench, which has
+  now worked on Verilator and Xcelium but never on Vivado.
 
 ### Efficiency: not measured yet
 
