@@ -186,8 +186,11 @@ by eye, without needing to trust anything:
 - **Case 3**: an all-ones matrix -- every row sums the same input vector,
   so all four `y` outputs should be identical and equal to `sum(x)`.
 
-Confirmed output in this environment (Verilator), matching independently
-Python-computed expected values for all three cases:
+Confirmed output, matching independently Python-computed expected values
+for all three cases, on **both** Verilator (this dev environment) and a
+real Cadence Xcelium 22.09-s003 install (the same shared university EDA
+server used for the main regression) -- byte-for-byte identical results
+on both:
 
 ```
 Case 1: x=(5,-3,10,-7)   -> y=(-984,-377,-1766,954)
@@ -205,8 +208,10 @@ already-verified `da_matvec_mult` module.
 `xrun` invocation (no `-R`, for the same reason documented there) but
 without the log-grep pass/fail machinery, since this demo has no
 scoreboard -- it just prints three worked examples straight to the
-console. There's no Vivado equivalent for the demo yet (not needed for
-the verified regression, which is unaffected by any of this -- see the
+console. It worked on the first try, no fixes needed (unlike the main
+regression's first Xcelium run) -- the `-R` lesson from that run carried
+straight over. There's no Vivado equivalent for the demo yet (not needed
+for the verified regression, which is unaffected by any of this -- see the
 confirmation below).
 
 ## Testbench / verification
