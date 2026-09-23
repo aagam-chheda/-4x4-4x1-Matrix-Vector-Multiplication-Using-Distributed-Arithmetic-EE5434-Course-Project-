@@ -198,10 +198,16 @@ Case 3: x=(1,2,3,4)      -> y=(10,10,10,10)
 To try a different example, edit the matrices/vectors in
 `demo/demo_data.svh` / `demo/demo_tb.sv` and `make run` again -- no RTL
 changes needed, since the matrix is now a genuine parameter of the
-already-verified `da_matvec_mult` module. This demo has only been run
-under Verilator; the Vivado/Xcelium flows haven't been extended to cover
-it (not needed for the verified regression, which is unaffected by any
-of this -- see the confirmation below).
+already-verified `da_matvec_mult` module.
+
+`demo/run_xcelium.sh` runs the same demo under Cadence Xcelium
+(`cd demo && ./run_xcelium.sh`), mirroring `sim/xcelium/run_xcelium.sh`'s
+`xrun` invocation (no `-R`, for the same reason documented there) but
+without the log-grep pass/fail machinery, since this demo has no
+scoreboard -- it just prints three worked examples straight to the
+console. There's no Vivado equivalent for the demo yet (not needed for
+the verified regression, which is unaffected by any of this -- see the
+confirmation below).
 
 ## Testbench / verification
 

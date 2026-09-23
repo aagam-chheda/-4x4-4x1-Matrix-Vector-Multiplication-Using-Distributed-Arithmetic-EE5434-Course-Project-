@@ -23,6 +23,7 @@ vivado_pid*.str
 
 # --- Cadence Xcelium ---
 sim/xcelium/xcelium_work/
+demo/xcelium_work/
 sim/xcelium/xrun.log
 sim/xcelium/xrun.history
 sim/xcelium/.simvision/
