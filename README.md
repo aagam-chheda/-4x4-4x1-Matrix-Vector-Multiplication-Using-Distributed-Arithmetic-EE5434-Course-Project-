@@ -327,12 +327,14 @@ Status by simulator:
   errors. This also confirms Xcelium handles the equivalence testbench's
   per-instance override of the `A_FLAT` array parameter across six
   differently-configured module pairs in one simulation.
-- **Vivado 2024.2**: both `MODE=obc` and `MODE=equiv` were run via
-  `run_vivado.bat` and **passed** (reported by the project owner; the
-  output was not shared, so no pass counts are quoted here -- they are
-  expected to match the Verilator/Xcelium figures above). This includes the
-  equivalence testbench's per-instance override of the `A_FLAT` array
-  parameter, now confirmed on all three simulators.
+- **Vivado 2024.2** (`run_vivado.bat`, Windows): both pass, with numbers
+  identical to Verilator and Xcelium -- `MODE=obc`: 408,425/408,425 checks,
+  8/8 ROM addresses (~20 s of simulation); `MODE=equiv`:
+  2,450,346/2,450,346 checks over the same 22,053,132 lockstep cycles, 0
+  errors (~4.5 minutes of simulation, versus ~4.5 s on Verilator -- the
+  six matrix pairs make this the heaviest run in the repo). This confirms
+  Vivado handles the equivalence testbench's per-instance override of the
+  `A_FLAT` array parameter, so it now works on all three simulators.
 
 ### Efficiency: measured (Vivado 2024.2, Artix-7 xc7a35tcpg236-1)
 
