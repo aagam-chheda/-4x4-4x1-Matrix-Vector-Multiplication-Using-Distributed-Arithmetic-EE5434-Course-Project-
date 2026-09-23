@@ -27,17 +27,22 @@ if {[llength $argv] > 1} { set part   [lindex $argv 1] }
 if {[llength $argv] > 2} { set period [lindex $argv 2] }
 if {[llength $argv] > 3} { set impl   [lindex $argv 3] }
 
+# Work from the repo root and use only RELATIVE, space-free paths from here
+# on. read_verilog and synth_design -include_dirs take Tcl *lists*, so an
+# absolute path containing a space (e.g. C:/Users/Aagam Chheda/...) gets
+# split into two bogus entries ("File 'C:/Users/Aagam' is a directory" --
+# confirmed on a real run). Relative paths sidestep that entirely.
 set here [file dirname [file normalize [info script]]]
-set root [file normalize [file join $here ..]]
-set outdir [file join $here reports $top]
+cd [file normalize [file join $here ..]]
+set outdir [file join synth reports $top]
 file mkdir $outdir
 
-read_verilog -sv [file join $root rtl $top.sv]
+read_verilog -sv [file join rtl $top.sv]
 
 # -include_dirs: the RTL pulls its default matrix in via a preprocessor
 # include of matrix_a.inc.
 synth_design -top $top -part $part -mode out_of_context \
-             -include_dirs [file join $root common]
+             -include_dirs common
 
 create_clock -name clk -period $period [get_ports clk]
 
