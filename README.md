@@ -339,8 +339,9 @@ Status by simulator:
 The design rationale was that LSB-first OBC needs a narrower adder (12 vs
 18 bits), a half-size ROM and no offset-correction stage, at the cost of a
 few XNORs. `synth/` synthesizes, places and routes each module
-out-of-context and reports the result. Measured on a real Vivado run, both
-at a deliberately tight 3 ns clock target:
+out-of-context and reports the result. Measured on real Vivado runs at two
+clock targets. **Tight target (3 ns, which neither design meets, so the
+tool pushes both to their limits):**
 
 | | `da_matvec_mult` (MSB-first) | `da_matvec_mult_obc` (LSB-first OBC) | Difference |
 |---|---|---|---|
@@ -349,21 +350,36 @@ at a deliberately tight 3 ns clock target:
 | Setup slack @ 3 ns | -1.321 ns | -0.729 ns | 0.59 ns better |
 | Implied critical path | ~4.32 ns (~231 MHz) | ~3.73 ns (~268 MHz) | **~14% shorter, ~16% higher clock** |
 
-So the OBC variant is both smaller and faster, matching the theory in
-direction. Read the numbers with these caveats:
+**Relaxed target (5 ns, which both designs meet):**
 
-- **One run, one part, default strategy.** Nothing here shows the ranking
-  holds on other devices or under other tool settings.
-- **Neither design met the 3 ns target**, so slack reflects the router
-  working under an unmet constraint; "implied critical path" is simply
-  3 ns minus the slack. Rerunning with a relaxed period
-  (`run_synth_compare.bat xc7a35tcpg236-1 5.0`) would show area and speed
-  without that stress.
-- **The registers are identical (105)** even though the datapaths differ;
-  Vivado trims unused bits, so register count is not where the difference
-  comes from. The gain is in LUTs (logic) and the shorter carry chain.
-- **Small design.** 18 LUTs is a real but small absolute saving, which is
-  what the theory predicted at 4 inputs.
+| | `da_matvec_mult` | `da_matvec_mult_obc` | Difference |
+|---|---|---|---|
+| LUTs | 115 | 106 | **-8%** |
+| Registers | 105 | 105 | identical |
+| Setup slack @ 5 ns | +0.534 ns | +0.655 ns | 0.12 ns better (~3%) |
+
+**What the two runs say together.** The OBC variant is smaller in both
+runs, matching the theory in direction, but the size of the advantage
+depends on the constraint:
+
+- **Area:** 8% fewer LUTs when timing is easy, 14% fewer when the tool is
+  pushed hard. The original grows more under pressure (115 -> 128 LUTs)
+  than the OBC variant (106 -> 110), plausibly because its 18-bit adder is
+  harder to speed up.
+- **Speed:** the 3 ns run is the meaningful one, since it drives both
+  designs to their limit: critical path about 3.73 ns (OBC) versus 4.32 ns
+  (original), roughly 14% shorter / 16% higher clock. The 5 ns slack
+  difference (0.12 ns) is *not* a speed measurement: once a design meets its
+  target the tool stops optimizing, so both simply land just inside 5 ns.
+  If both are only run at a relaxed target, the speed advantage is
+  effectively invisible.
+- **Registers** are identical in every run (105); Vivado trims unused
+  bits, so the gain is in logic and carry-chain length, not flip-flops.
+
+A fair one-line summary: modestly smaller (roughly 8-14% fewer LUTs) and
+faster when pushed (roughly 14% shorter critical path) on this device.
+Caveats: one device (Artix-7), default tool strategy, single runs, and a
+very small design, so treat these as indicative rather than general.
 
 One oddity worth knowing: the first synthesis attempt of the *original*
 module failed with `couldn't read file ".../unimacro_verilog.tcl": No
@@ -387,7 +403,9 @@ run_synth_compare.bat
 ```
 
 This prints one `SUMMARY` line per variant; full reports land in
-`synth/reports/`. The target part can be changed with the first argument.
+`synth/reports/` (overwritten by each run). Arguments: part, clock period
+in ns, and 1/0 for place-and-route: the 3 ns run above is the default;
+`run_synth_compare.bat xc7a35tcpg236-1 5.0` gives the relaxed-target run.
 
 ## Testbench / verification
 
