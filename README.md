@@ -327,10 +327,12 @@ Status by simulator:
   errors. This also confirms Xcelium handles the equivalence testbench's
   per-instance override of the `A_FLAT` array parameter across six
   differently-configured module pairs in one simulation.
-- **Vivado**: the new modes have **not been run yet** (the default `orig`
-  path is behaviorally unchanged). The thing to watch there is the same
-  per-instance `A_FLAT` override in the equivalence testbench, which has
-  now worked on Verilator and Xcelium but never on Vivado.
+- **Vivado 2024.2**: both `MODE=obc` and `MODE=equiv` were run via
+  `run_vivado.bat` and **passed** (reported by the project owner; the
+  output was not shared, so no pass counts are quoted here -- they are
+  expected to match the Verilator/Xcelium figures above). This includes the
+  equivalence testbench's per-instance override of the `A_FLAT` array
+  parameter, now confirmed on all three simulators.
 
 ### Efficiency: measured (Vivado 2024.2, Artix-7 xc7a35tcpg236-1)
 
