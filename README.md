@@ -19,7 +19,7 @@ below). Edit it there; nothing else needs to change.
 ## Directory layout
 
 ```
-common/ matrix_a.inc        - single source of truth for matrix A (see below)
+common/ matrix_a.inc        - default matrix A for the verified regression (see below)
 rtl/    da_matvec_mult.sv   - synthesizable DUT
 dpi/    golden_model.c      - DPI-C golden reference model (y = A*x in C)
 tb/     da_matvec_tb.sv     - self-checking testbench + scoreboard
@@ -27,6 +27,8 @@ sim/
   verilator/Makefile        - Verilator build/run/coverage flow
   vivado/                   - Vivado xsim batch flow (filelist + Linux/.sh and Windows/.bat scripts)
   xcelium/                  - Cadence Xcelium (xrun) batch flow (filelist + script)
+demo/                        - presentation demo: true per-instance matrix
+                               parameterization, see "Demo" below
 ```
 
 ## Architecture
@@ -103,7 +105,17 @@ flat, row-major list of 16 signed integer literals with no
 language-specific syntax around it.
 
 - `rtl/da_matvec_mult.sv` pulls it in with SystemVerilog's `` `include ``
-  into `localparam int signed A_FLAT [16] = '{ ... };`
+  as the *default value* of a module `parameter` (not a `localparam`):
+  `parameter int signed A_FLAT [N*N] = '{ ... };`. Making it a real
+  parameter (rather than a compile-time-fixed constant) means an
+  instance can override it with a completely different matrix --
+  `da_matvec_mult #(.A_FLAT(SOME_OTHER_MATRIX)) dut (...)` -- with no
+  RTL edit and no rebuild-between-cases, while any instance that doesn't
+  override it (every instance in the verified regression,
+  `tb/da_matvec_tb.sv` included) still gets exactly this file's matrix,
+  unchanged. See "Demo: true per-instance matrix parameterization" below
+  for a concrete example -- three instances of this same module, three
+  different matrices, one simulation, no rebuild.
 - `dpi/golden_model.c` pulls it in with C's `#include` into
   `static const int32_t A_FLAT[16] = { ... };`
 
@@ -121,7 +133,15 @@ relative to the including source file by default, SystemVerilog's
 `` `include `` is resolved against the tool's `-I`/`-i` search path. So the
 RTL uses a bare filename (`` `include "matrix_a.inc" ``), and
 `sim/verilator/Makefile` passes `-I../../common` / `run_vivado.sh` passes
-`xvlog -i ../../../common` to point at it.
+`xvlog -i ../../common` to point at it.
+
+Turning `A_FLAT` from a `localparam` into a `parameter` (to support the
+demo below) is a real change to this verified RTL file, so it was
+re-checked against the full regression immediately: the entire
+408,425-check suite still passes unchanged on Verilator after the
+change, confirming the new parameter's default behaves identically to
+the old localparam for every instance that doesn't override it --
+exactly the property this change needed to preserve.
 
 ### Design bug found & fixed during verification
 
@@ -135,6 +155,53 @@ operand of the adder is muxed between `acc<<1` and `0`, so there is still no
 separate negation/reset hardware. This is exactly the kind of correctness
 bug the DPI-C golden-model self-checking scoreboard was built to catch, and
 it did, on the very first regression run.
+
+## Demo: true per-instance matrix parameterization
+
+```sh
+cd demo
+make run
+```
+
+A small, separate, presentation-oriented testbench (`demo/demo_tb.sv`) --
+not part of the verified regression, doesn't touch `tb/`, `sim/`, or any
+of its build artifacts. It exists purely to show off that `A_FLAT` is now
+a real SystemVerilog module `parameter`, not a compile-time-fixed
+constant: it instantiates the *exact same* `da_matvec_mult` RTL module
+three times in **one** simulation, each instance given a **different**
+4x4 matrix via `#(.A_FLAT(...))`, and prints a clean summary of each
+case's matrix, input vector, and computed output. No rebuild between
+cases -- all three exist side by side in the one compiled, elaborated
+design.
+
+Each of the three cases is chosen so the expected result can be checked
+by eye, without needing to trust anything:
+
+- **Case 1**: the real hardware's matrix (a copy of `common/matrix_a.inc`
+  -- see `demo/demo_data.svh` for why it's a copy rather than a shared
+  `include, kept intentionally self-contained for presentation clarity),
+  with an arbitrary example vector -- this is the actual verified chip.
+- **Case 2**: a diagonal scaling matrix `diag(2,3,4,5)` -- `y[i]` should
+  come out to exactly `scale[i]*x[i]`, nothing more.
+- **Case 3**: an all-ones matrix -- every row sums the same input vector,
+  so all four `y` outputs should be identical and equal to `sum(x)`.
+
+Confirmed output in this environment (Verilator), matching independently
+Python-computed expected values for all three cases:
+
+```
+Case 1: x=(5,-3,10,-7)   -> y=(-984,-377,-1766,954)
+Case 2: x=(10,10,10,10)  -> y=(20,30,40,50)
+Case 3: x=(1,2,3,4)      -> y=(10,10,10,10)
+```
+
+To try a different example, edit the matrices/vectors in
+`demo/demo_data.svh` / `demo/demo_tb.sv` and `make run` again -- no RTL
+changes needed, since the matrix is now a genuine parameter of the
+already-verified `da_matvec_mult` module. This demo has only been run
+under Verilator; the Vivado/Xcelium flows haven't been extended to cover
+it (not needed for the verified regression, which is unaffected by any
+of this -- see the confirmation below).
 
 ## Testbench / verification
 
@@ -664,7 +731,12 @@ module da_matvec_mult #(
     parameter int N  = 4,
     parameter int XW = 8,   // input width
     parameter int YW = 18,  // output width
-    parameter int RW = 10   // ROM entry width
+    parameter int RW = 10,  // ROM entry width
+
+    // Coefficient matrix, flat row-major (row r, col c at A_FLAT[r*N+c]).
+    // Default pulled from common/matrix_a.inc; override per instance for
+    // a different matrix with no rebuild -- see demo/demo_tb.sv.
+    parameter int signed A_FLAT [N*N] = '{ /* from common/matrix_a.inc */ }
 ) (
     input  logic                 clk,
     input  logic                 rst_n,   // async active-low

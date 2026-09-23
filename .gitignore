@@ -3,6 +3,7 @@ sim/verilator/obj_dir/
 sim/verilator/obj_dir_cov/
 sim/verilator/cov_annotate/
 sim/verilator/coverage.dat
+demo/obj_dir/
 *.vcd
 *.fst
 *.fst.hier

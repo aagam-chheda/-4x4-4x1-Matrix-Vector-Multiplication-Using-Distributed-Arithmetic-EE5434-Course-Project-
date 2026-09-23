@@ -24,8 +24,32 @@ module da_matvec_mult #(
     parameter int N  = 4,   // vector/matrix dimension
     parameter int XW = 8,   // input element width (signed)
     parameter int YW = 18,  // output element width (signed)
-    parameter int RW = 10   // ROM entry width (signed) - subset sums fit in 9 bits,
+    parameter int RW = 10,  // ROM entry width (signed) - subset sums fit in 9 bits,
                              // 10 gives headroom
+
+    // The coefficient matrix, flat row-major (row r, column c at
+    // A_FLAT[r*N+c]). A true module PARAMETER, not a localparam: can be
+    // overridden per instance with `da_matvec_mult #(.A_FLAT(SOME_MAT))
+    // dut (...)`, e.g. to instantiate several differently-configured
+    // copies of this same RTL in one simulation with no rebuild between
+    // them (see demo/demo_tb.sv). The DEFAULT value is still pulled from
+    // common/matrix_a.inc via `include -- the SAME file
+    // dpi/golden_model.c pulls in via #include -- so an instance that
+    // does NOT override this parameter (every instance in the verified
+    // regression, tb/da_matvec_tb.sv included) behaves exactly as
+    // before: the matrix is written down exactly once, and editing
+    // common/matrix_a.inc updates both the RTL's default DA ROMs and the
+    // golden model on the next build, with nothing else to keep in sync
+    // by hand.
+    //
+    // NOTE: `include is resolved against the invoking tool's -I search
+    // path (not source-relative, unlike C's #include), so this uses a
+    // bare filename -- sim/verilator/Makefile, sim/vivado/run_vivado.sh,
+    // and sim/xcelium/run_xcelium.sh all pass -I/-i/-incdir pointing at
+    // common/.
+    parameter int signed A_FLAT [N*N] = '{
+`include "matrix_a.inc"
+    }
 ) (
     input  logic                  clk,
     input  logic                  rst_n,    // async active-low reset
@@ -43,23 +67,6 @@ module da_matvec_mult #(
     output logic signed [YW-1:0]  y2,
     output logic signed [YW-1:0]  y3
 );
-
-    // ------------------------------------------------------------------
-    // Fixed coefficient matrix (compile-time constant).
-    //
-    // Pulled in from common/matrix_a.inc via `include -- the SAME file
-    // dpi/golden_model.c pulls in via #include -- so the matrix is
-    // written down exactly once; editing common/matrix_a.inc updates
-    // both the RTL's DA ROMs and the golden model on the next build,
-    // with nothing else to keep in sync by hand.
-    // ------------------------------------------------------------------
-    // NOTE: `include is resolved against the invoking tool's -I search
-    // path (not source-relative, unlike C's #include), so this uses a
-    // bare filename -- both sim/verilator/Makefile and
-    // sim/vivado/run_vivado.sh pass -I/-i pointing at common/.
-    localparam int signed A_FLAT [N*N] = '{
-`include "matrix_a.inc"
-    };
 
     // ------------------------------------------------------------------
     // DA ROM generation: for each row, a 16-entry table of subset sums.
