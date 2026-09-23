@@ -372,13 +372,17 @@ exit-code quirk, and an unquoted-`-testplusarg` parse failure) -- see
 Linux-native counterpart) carries the same fixes but hasn't itself been
 run against a real install.
 
-**Cadence Xcelium remains the one genuinely unverified piece.** No
-Xcelium install has been available to test against (the intended one was
-down); `sim/xcelium/run_xcelium.sh` was written directly against
-documented `xrun` usage and, based on what the Vivado run taught us,
-now defensively greps its own log rather than trusting `xrun`'s exit
-code -- see "Running in Cadence Xcelium" below for the specific points
-still worth double-checking on a real run.
+**Cadence Xcelium (22.09-s003) is now also confirmed working end-to-end,
+against the full current suite:** `run_xcelium.sh`, run against a real
+Xcelium install on a shared university EDA server, passes
+`REGRESSION PASSED: 408425/408425 checks passed`, identical to both the
+Verilator and Vivado results including the same default seed and pass
+count. Getting there surfaced and fixed one real, Xcelium-specific issue
+(`-R` means something different in a one-shot `xrun` invocation than it
+does for Vivado's `xsim -R` -- see "Running in Cadence Xcelium" below for
+the full account). **All three simulators this project targets are now
+genuinely confirmed, on the same expanded suite, not just documented
+against.**
 
 ## Running in Verilator
 
@@ -602,52 +606,56 @@ see the note below on why.
   script, Xcelium gets the more portable form automatically, whatever its
   own stance on the original form would have been.
 
-**This has been run against a real Xcelium 22.09-s003 install; the first
-attempt failed on the `-R` issue described above (now fixed), and
-re-verification after that fix is in progress** -- this repo's earlier
-functional sign-off was exclusively via Verilator, and this section will
-be updated with a confirmed pass/fail once the fixed script has actually
-completed a run. Before treating a future Xcelium run as sign-off, still
-worth double-checking:
+### Confirmed: full pass on real Xcelium 22.09-s003
 
-- **DPI-C compiled directly by `xrun`**: the simplest and most commonly
-  documented Xcelium DPI flow for plain scalar-argument functions (which
-  is all `golden_matvec` uses -- `byte`/`int` DPI types, no `svdpi.h`
-  dependency), not yet confirmed either way (the run that would have
-  reached this step failed earlier, at the `-R`/elaboration-skip issue).
-  If Xcelium's C compilation step rejects it, check
-  `xcelium_work/xrun.log` for the specific compiler invocation/error
-  first -- it's very likely a missing `-l`/library flag or a C-vs-C++
-  language-mode mismatch rather than anything about the DPI function
-  itself, given that the exact same C source already builds cleanly
-  under Verilator (g++) and Vivado's bundled MinGW gcc.
-- **`$fatal`/exit-code propagation from `xrun`**: still unverified against
-  a real Xcelium install, but *not* assumed to be fine -- the script
-  already defensively greps `xcelium_work/xrun.log` for
-  `REGRESSION PASSED` rather than trusting `xrun`'s own exit code,
-  because that exact assumption was confirmed **wrong** for Vivado (its
-  `xsim -R` returns exit code 0 even when `$fatal` fired mid-run; see
-  "Running in Vivado" below). Xcelium may well propagate it correctly --
-  genuinely unknown either way -- but the log-based check is correct
-  regardless of which way that turns out.
-- **`build_rom()`**: the same `automatic`-function-returning-an-unpacked-
-  array-at-elaboration-time pattern flagged in the Vivado section above.
-  Cadence's SystemVerilog parser is generally considered very
-  standards-compliant, so this is a lower-risk item than for Vivado, but
-  still unverified here -- the same explicit-`case`-statement fallback
-  applies if it's ever needed.
-- **Hierarchical references from the testbench into the DUT**
-  (`dut.load`, `dut.cnt`, `dut.sub`, `dut.addr`, `dut.busy`, used for
-  coverage tracking): standard, compile-time-resolved SystemVerilog
-  cross-module references, not a debug/PLI feature, so they shouldn't
-  need `-access` -- the script passes `-access +rwc` anyway since it's
-  cheap and useful if you want to add waveform dumping later.
+`run_xcelium.sh` has been run to completion against a real Xcelium
+22.09-s003 install (a shared university EDA server, via `xrun` at
+`/home/Cadence_tools/XCELIUM2209/tools/bin/xrun` on that machine -- not
+on `PATH` by default there, just not wired into `module`/a login shell).
+Result: **`REGRESSION PASSED: 408425/408425 checks passed`**, all 8
+cycles/both control paths/16 ROM addresses covered -- identical to both
+the Verilator and Vivado results, including the same default seed
+(`14311149`) and the same pass count on the full current suite. All
+three simulators this project targets are now genuinely confirmed
+end-to-end against the same 408,425-check regression, not just two of
+three plus documentation for the third.
 
-If you hit an actual error running this, the fastest way to get help
-debugging it (from me, without an Xcelium install to reproduce against)
-is the exact `xrun` error text plus the surrounding lines of
-`xcelium_work/xrun.log` -- SystemVerilog semantics can be reasoned about
-from the error message even without the tool in hand.
+Getting there surfaced one real, Xcelium-specific issue, described above
+and now fixed in the committed source: **`-R` in a one-shot `xrun`
+invocation means "skip straight to running a previously-elaborated
+snapshot,"** not "run to completion after elaborating" the way Vivado's
+`xsim -R` does -- combined with HDL sources and `-top` in the same
+command, it warned that both would be ignored, then failed with `NOSTUP`
+since no snapshot existed yet. Dropping `-R` entirely fixed it: `xrun`
+compiles, elaborates, and runs to completion by default when given HDL
+sources directly, with no separate run-control flag needed.
+
+Two harmless, informational warnings appeared in the log and don't
+affect correctness:
+- `xmelab: *W,DSEMEL` / `xmsim: *W,DSEM2009` -- simulated per IEEE
+  1800-2009 semantics by default; not an issue for this design.
+- `xmsim: *W,OLDURR` -- Xcelium's default `$urandom_range` algorithm "can
+  have distribution problems." Since the CRV bias logic is already
+  explicitly engineered (30% extreme/near-extreme literals, 20% boundary
+  jitter, 50% uniform -- see "Testbench / verification" above) rather
+  than relying on `$urandom_range` alone for interesting-value coverage,
+  and the actual pass/fail check is exact equality against the golden
+  model regardless of how the random stream was generated, this doesn't
+  affect correctness here -- but worth knowing about if this testbench
+  is ever reused somewhere sample-distribution-quality matters more.
+
+`$fatal`/exit-code propagation from `xrun` was not separately isolated
+with a standalone test the way it was for Vivado (the full regression's
+own log-grep-based exit code was confirmed correct instead, which is
+what actually matters for CI use) -- `run_xcelium.sh` still doesn't
+trust `xrun`'s raw exit code, on principle, regardless.
+
+If you hit an actual error running this in a different Xcelium version,
+the fastest way to get help debugging it (from me, without an Xcelium
+install to reproduce against) is the exact `xrun` error text plus the
+surrounding lines of `xcelium_work/xrun.log` -- SystemVerilog semantics
+can be reasoned about from the error message even without the tool in
+hand.
 
 ## Interface
 
