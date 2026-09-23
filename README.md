@@ -332,28 +332,60 @@ Status by simulator:
   per-instance `A_FLAT` override in the equivalence testbench, which has
   now worked on Verilator and Xcelium but never on Vivado.
 
-### Efficiency: not measured yet
+### Efficiency: measured (Vivado 2024.2, Artix-7 xc7a35tcpg236-1)
 
-The design rationale is that LSB-first OBC should need a narrower adder
-(12 vs 18 bits), a half-size ROM and no offset-correction stage, at the
-cost of a few XNORs and one extra result-register bit -- but no synthesis
-was available in the environment this was built in, so **there are no area
-or timing numbers yet**, and at this size (4 inputs, 8-bit) the difference
-may be small. `synth/` has a Vivado script to get the real numbers:
+The design rationale was that LSB-first OBC needs a narrower adder (12 vs
+18 bits), a half-size ROM and no offset-correction stage, at the cost of a
+few XNORs. `synth/` synthesizes, places and routes each module
+out-of-context and reports the result. Measured on a real Vivado run, both
+at a deliberately tight 3 ns clock target:
 
-```sh
-# Windows, from a Command Prompt after: call C:\Xilinx\Vivado\2024.2\settings64.bat
+| | `da_matvec_mult` (MSB-first) | `da_matvec_mult_obc` (LSB-first OBC) | Difference |
+|---|---|---|---|
+| LUTs | 128 | 110 | **-14%** |
+| Registers | 105 | 105 | identical |
+| Setup slack @ 3 ns | -1.321 ns | -0.729 ns | 0.59 ns better |
+| Implied critical path | ~4.32 ns (~231 MHz) | ~3.73 ns (~268 MHz) | **~14% shorter, ~16% higher clock** |
+
+So the OBC variant is both smaller and faster, matching the theory in
+direction. Read the numbers with these caveats:
+
+- **One run, one part, default strategy.** Nothing here shows the ranking
+  holds on other devices or under other tool settings.
+- **Neither design met the 3 ns target**, so slack reflects the router
+  working under an unmet constraint; "implied critical path" is simply
+  3 ns minus the slack. Rerunning with a relaxed period
+  (`run_synth_compare.bat xc7a35tcpg236-1 5.0`) would show area and speed
+  without that stress.
+- **The registers are identical (105)** even though the datapaths differ;
+  Vivado trims unused bits, so register count is not where the difference
+  comes from. The gain is in LUTs (logic) and the shorter carry chain.
+- **Small design.** 18 LUTs is a real but small absolute saving, which is
+  what the theory predicted at 4 inputs.
+
+One oddity worth knowing: the first synthesis attempt of the *original*
+module failed with `couldn't read file ".../unimacro_verilog.tcl": No
+error`, a Vivado-internal file-access message unrelated to the RTL. An
+immediate rerun of the identical command succeeded. It is most likely a
+transient (another process using the file; a simulator run was active in
+another window at the time), but that is a hypothesis -- it was not
+reproduced or root-caused.
+
+Also fixed along the way: the script originally failed on both variants
+with `File 'C:/Users/Aagam' is a directory`, because Vivado's
+`read_verilog` / `-include_dirs` take Tcl lists and an absolute path
+containing a space (`C:\Users\Aagam Chheda\...`) was split in two. The
+script now works from the repo root with relative paths.
+
+To reproduce (Windows, after `call ...\settings64.bat`):
+
+```bat
 cd synth
-run_synth_compare.bat                # or ./run_synth_compare.sh on Linux
+run_synth_compare.bat
 ```
 
-It synthesizes, places and routes each module out-of-context at a tight
-3 ns clock and prints one `SUMMARY` line per variant (LUTs, registers,
-setup slack); full reports land in `synth/reports/`. Like the new simulator
-modes, this script is unrun -- it is written against Vivado's documented
-Tcl commands, and if it errors the exact message is what's needed to fix
-it. The default target part (`xc7a35tcpg236-1`) can be changed with the
-first argument.
+This prints one `SUMMARY` line per variant; full reports land in
+`synth/reports/`. The target part can be changed with the first argument.
 
 ## Testbench / verification
 
