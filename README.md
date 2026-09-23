@@ -20,9 +20,12 @@ below). Edit it there; nothing else needs to change.
 
 ```
 common/ matrix_a.inc        - default matrix A for the verified regression (see below)
-rtl/    da_matvec_mult.sv   - synthesizable DUT
+rtl/    da_matvec_mult.sv   - synthesizable DUT (MSB-first)
+        da_matvec_mult_obc.sv - drop-in LSB-first Offset-Binary-Coding variant
 dpi/    golden_model.c      - DPI-C golden reference model (y = A*x in C)
-tb/     da_matvec_tb.sv     - self-checking testbench + scoreboard
+tb/     da_matvec_tb.sv     - self-checking testbench + scoreboard (either DUT)
+        da_matvec_equiv_tb.sv - lockstep original-vs-OBC equivalence testbench
+synth/  synth_compare.tcl   - Vivado synthesis/timing comparison of the two variants
 sim/
   verilator/Makefile        - Verilator build/run/coverage flow
   vivado/                   - Vivado xsim batch flow (filelist + Linux/.sh and Windows/.bat scripts)
@@ -213,6 +216,132 @@ regression's first Xcelium run) -- the `-R` lesson from that run carried
 straight over. There's no Vivado equivalent for the demo yet (not needed
 for the verified regression, which is unaffected by any of this -- see the
 confirmation below).
+
+## Variant: LSB-first Offset Binary Coding (OBC)
+
+`rtl/da_matvec_mult_obc.sv` is a drop-in alternative to `da_matvec_mult`:
+same ports, same parameters (including the per-instance `A_FLAT` matrix),
+same 8-cycle `busy`/`done` handshake, same "`y` holds until the next
+`start`" contract, same results -- built differently. It combines two
+classic distributed-arithmetic techniques:
+
+- **Offset Binary Coding** halves each row's ROM. Writing
+  `x = -c7*2^6 + sum(c_k * 2^(k-1)) - 1/2` with `c_k = 2*b_k - 1` (always
+  +1 or -1) turns each ROM word into `+/-A0 +/-A1 +/-A2 +/-A3`. Negating
+  every sign negates the word, so only 8 of the 16 sign patterns need
+  storing: the ROM address becomes 3 bits, `{b3 XNOR b0, b2 XNOR b0,
+  b1 XNOR b0}`, and `b0` chooses add vs subtract.
+- **LSB-first, right-shifting accumulation.** Instead of doubling a full
+  18-bit accumulator each cycle, the datapath is `{U, L}`: an upper
+  accumulator `U` that the adder works on, and a 7-bit register `L`
+  collecting bits shifted out on the right. Each cycle:
+  `sum = U +/- M; U <= sum >>> 1; L <= {sum[0], L[6:1]}`. The OBC offset
+  `-sum(A_i)` is seeded into `U` on the first cycle (this is the form in
+  which the offset works out exactly; in the MSB-first scheme it would
+  need a separate correction stage), after which `y = {U, L}`.
+
+| | `da_matvec_mult` | `da_matvec_mult_obc` |
+|---|---|---|
+| bit order | MSB first | LSB first (sign bit last) |
+| ROM per row | 16 entries x 10 bits | 8 entries x 11 bits |
+| adder width per row | 18 (full accumulator) | 12 (upper part only) |
+| result registers per row | 18 | 19 (12 + 7) |
+| extra logic | none | address XNORs, offset mux |
+
+The widths are sized for **any** matrix of signed 8-bit coefficients, not
+just the default one, and a bit-accurate Python model (run before any RTL
+was written) confirmed the exact bounds: ROM words reach +/-512 (11 bits)
+and the adder reaches +/-1024 (12 bits) for a matrix of all -128. The
+default matrix alone would fit in 11 bits.
+
+### How it's tested
+
+- **The whole existing regression, unchanged, against the variant.**
+  `tb/da_matvec_tb.sv` selects its DUT with a compile-time macro
+  (`DUT_OBC`), so every directed / exhaustive / random category, the DPI
+  golden model and the protocol monitor apply as-is:
+  **408,425/408,425 checks pass**, all 8 shift cycles and both add/subtract
+  paths exercised, all **8/8** ROM addresses (the variant's ROM address is
+  3 bits). The variant keeps the original's internal signal names
+  (`load`, `cnt`, `sub`, `addr`, `busy`) so the coverage and protocol
+  monitors hook in without modification.
+- **A lockstep equivalence testbench** (`tb/da_matvec_equiv_tb.sv`). The
+  original and OBC modules run side by side on identical stimulus for
+  **six different matrices at once** (the real matrix, all -128, all +127,
+  a -128/+127 checkerboard, a mixed matrix, a sparse matrix with a zero
+  row) -- possible because `A_FLAT` is a per-instance parameter. Every
+  completed computation is checked against an expected value recomputed
+  from the instance's own matrix (no DPI needed, so it works for any
+  matrix), and `busy`/`done` must match between the two modules on every
+  clock cycle. Result: **408,391 vectors x 6 matrices = 2,450,346 checks
+  and 22,053,132 lockstep cycles, 0 errors** (about 4.5 s under Verilator).
+  This testbench exists because the main regression alone has a blind
+  spot: it only ever uses the default matrix, so it cannot notice a
+  datapath that is too narrow for a *different* matrix (see mutant M4).
+
+### Mutation testing (Verilator)
+
+Seven deliberate OBC-specific bugs were injected one at a time and run
+against both testbenches, then reverted:
+
+| Mutant | Main regression (OBC) | Equivalence tb |
+|---|---|---|
+| M1 address uses XOR instead of XNOR | 408,424 / 408,425 fail | 2,450,346 errors |
+| M2 offset sign wrong (+T not -T), one row | 408,424 / 408,425 fail | 2,450,346 errors |
+| M3 sign-bit cycle not handled | 408,424 / 408,425 fail | 2,174,603 errors |
+| **M4 adder one bit too narrow (WU = RW+1)** | **passes -- bug not detected** | **99,662 errors** |
+| M5 stale accumulator used on load, one row | 382,359 / 408,425 fail | 2,011,831 errors |
+| M6 wrong bit shifted into low register | 405,288 / 408,425 fail | 1,896,886 errors |
+| M7 one ROM entry off by one | 183,344 / 408,425 fail | 1,103,658 errors |
+
+M4 is the instructive one: the main regression cannot see it, because the
+default matrix never needs the extra adder bit, while the equivalence
+testbench catches it immediately through the extreme matrices. One
+attempted mutant (corrupting the bit shifted into `L` on the *load* cycle)
+was undetectable, correctly: that bit is the always-zero parity bit that
+falls off the 7-bit register, so changing it cannot change the output --
+an equivalent mutant, consistent with the derivation.
+
+### Running it
+
+```sh
+cd sim/verilator
+make run_obc      # main regression against the OBC variant
+make run_equiv    # lockstep equivalence testbench
+```
+
+Both were run on Verilator only. `sim/xcelium/run_xcelium.sh` and
+`sim/vivado/run_vivado.sh` / `.bat` accept a `MODE` environment variable
+(`orig` default, unchanged; `obc`; `equiv`), e.g. `MODE=obc
+./run_xcelium.sh` or, on Windows, `set MODE=obc` before `run_vivado.bat`
+(and `set MODE=` afterwards to return to the default). **These new modes
+have not been run on Vivado or Xcelium yet** -- the default `orig` path is
+behaviorally unchanged. One thing to watch when they are: the equivalence
+testbench overrides the `A_FLAT` array parameter per instance, which has
+been exercised on Verilator and Xcelium (via the demo) but never on Vivado.
+
+### Efficiency: not measured yet
+
+The design rationale is that LSB-first OBC should need a narrower adder
+(12 vs 18 bits), a half-size ROM and no offset-correction stage, at the
+cost of a few XNORs and one extra result-register bit -- but no synthesis
+was available in the environment this was built in, so **there are no area
+or timing numbers yet**, and at this size (4 inputs, 8-bit) the difference
+may be small. `synth/` has a Vivado script to get the real numbers:
+
+```sh
+# Windows, from a Command Prompt after: call C:\Xilinx\Vivado\2024.2\settings64.bat
+cd synth
+run_synth_compare.bat                # or ./run_synth_compare.sh on Linux
+```
+
+It synthesizes, places and routes each module out-of-context at a tight
+3 ns clock and prints one `SUMMARY` line per variant (LUTs, registers,
+setup slack); full reports land in `synth/reports/`. Like the new simulator
+modes, this script is unrun -- it is written against Vivado's documented
+Tcl commands, and if it errors the exact message is what's needed to fix
+it. The default target part (`xc7a35tcpg236-1`) can be changed with the
+first argument.
 
 ## Testbench / verification
 

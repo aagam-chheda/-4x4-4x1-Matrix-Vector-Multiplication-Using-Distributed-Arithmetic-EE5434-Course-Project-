@@ -51,16 +51,41 @@ if exist xsim.dir rmdir /s /q xsim.dir
 if exist .Xil rmdir /s /q .Xil
 del /q golden_model.a golden_model.so *.jou *.log *.wdb *.pb >nul 2>&1
 
+REM MODE selects what to run (set it as an environment variable before
+REM calling this script, e.g.  set MODE=obc ). The default (orig) is exactly
+REM the flow confirmed on a real Vivado 2024.2 install; the other two are
+REM additions that have not been run on Vivado yet.
+REM   orig  (default) main regression against the original da_matvec_mult
+REM   obc   the same regression against the LSB-first OBC variant
+REM         (rtl\da_matvec_mult_obc.sv), selected via the DUT_OBC macro
+REM   equiv lockstep equivalence testbench (original + OBC side by side over
+REM         several matrices; no DPI golden model needed)
+if "%MODE%"=="" set MODE=orig
+set FILELIST=filelist.f
+set TOP=da_matvec_tb
+set DEFS=
+set USE_DPI=1
+if /i "%MODE%"=="obc" set FILELIST=filelist_obc.f
+if /i "%MODE%"=="obc" set DEFS=-d DUT_OBC
+if /i "%MODE%"=="equiv" set FILELIST=filelist_equiv.f
+if /i "%MODE%"=="equiv" set TOP=da_matvec_equiv_tb
+if /i "%MODE%"=="equiv" set USE_DPI=0
+echo == MODE=%MODE% (top=%TOP%, filelist=%FILELIST%) ==
+
+set SVLIB=
+if "%USE_DPI%"=="0" goto :after_xsc
 echo == Compiling DPI-C golden model with xsc ==
 call xsc ..\..\dpi\golden_model.c -o golden_model
 if errorlevel 1 goto :fail
+set SVLIB=-sv_lib golden_model
+:after_xsc
 
 echo == Compiling SystemVerilog sources with xvlog ==
-call xvlog --sv -i ..\..\common -f filelist.f
+call xvlog --sv %DEFS% -i ..\..\common -f %FILELIST%
 if errorlevel 1 goto :fail
 
-echo == Elaborating with xelab (linking DPI-C shared lib) ==
-call xelab da_matvec_tb -sv_lib golden_model -s da_matvec_tb_sim
+echo == Elaborating with xelab (linking DPI-C shared lib when used) ==
+call xelab %TOP% %SVLIB% -s da_matvec_tb_sim
 if errorlevel 1 goto :fail
 
 echo == Running with xsim (batch mode) ==

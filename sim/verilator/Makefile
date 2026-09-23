@@ -2,6 +2,11 @@
 #
 # Targets:
 #   make run       - build (functional, no coverage) and run the regression
+#                    against the original MSB-first module
+#   make run_obc   - the SAME regression against the LSB-first Offset
+#                    Binary Coding variant (rtl/da_matvec_mult_obc.sv)
+#   make run_equiv - lockstep equivalence testbench: original and OBC
+#                    variants side by side across several matrices
 #   make coverage  - build with --coverage, run, and print an annotated
 #                    line/toggle/branch coverage summary
 #   make clean     - remove build/coverage artifacts
@@ -18,7 +23,13 @@ C_SRCS       = $(DPI_DIR)/golden_model.c
 
 VERILATOR_FLAGS = --binary --timing -Wall -Wno-DECLFILENAME -I$(COMMON_DIR)
 
-.PHONY: all run coverage clean
+OBC_SV_SRCS  = $(RTL_DIR)/da_matvec_mult_obc.sv $(TB_DIR)/da_matvec_tb.sv
+
+EQUIV_TOP    = da_matvec_equiv_tb
+EQUIV_SRCS   = $(RTL_DIR)/da_matvec_mult.sv $(RTL_DIR)/da_matvec_mult_obc.sv \
+               $(TB_DIR)/da_matvec_equiv_tb.sv
+
+.PHONY: all run run_obc run_equiv coverage clean
 
 all: run
 
@@ -28,6 +39,20 @@ obj_dir/V$(TOP): $(SV_SRCS) $(C_SRCS) $(COMMON_DIR)/matrix_a.inc
 
 run: obj_dir/V$(TOP)
 	./obj_dir/V$(TOP)
+
+obj_dir_obc/V$(TOP)_obc: $(OBC_SV_SRCS) $(C_SRCS) $(COMMON_DIR)/matrix_a.inc
+	$(VERILATOR) $(VERILATOR_FLAGS) -DDUT_OBC --top-module $(TOP) \
+		$(OBC_SV_SRCS) $(C_SRCS) -Mdir obj_dir_obc -o V$(TOP)_obc
+
+run_obc: obj_dir_obc/V$(TOP)_obc
+	./obj_dir_obc/V$(TOP)_obc
+
+obj_dir_equiv/V$(EQUIV_TOP): $(EQUIV_SRCS) $(COMMON_DIR)/matrix_a.inc
+	$(VERILATOR) $(VERILATOR_FLAGS) --top-module $(EQUIV_TOP) \
+		$(EQUIV_SRCS) -Mdir obj_dir_equiv -o V$(EQUIV_TOP)
+
+run_equiv: obj_dir_equiv/V$(EQUIV_TOP)
+	./obj_dir_equiv/V$(EQUIV_TOP)
 
 obj_dir_cov/V$(TOP)_cov: $(SV_SRCS) $(C_SRCS) $(COMMON_DIR)/matrix_a.inc
 	$(VERILATOR) $(VERILATOR_FLAGS) --coverage --top-module $(TOP) \
@@ -39,4 +64,4 @@ coverage: obj_dir_cov/V$(TOP)_cov
 	@echo "Annotated source: sim/verilator/cov_annotate/"
 
 clean:
-	rm -rf obj_dir obj_dir_cov cov_annotate coverage.dat
+	rm -rf obj_dir obj_dir_obc obj_dir_equiv obj_dir_cov cov_annotate coverage.dat

@@ -47,6 +47,22 @@
 
 `timescale 1ns/1ps
 
+// DUT selection. Default: the original MSB-first module (16-entry DA ROM
+// addresses). Compile with the DUT_OBC macro defined to run this exact
+// same regression, unchanged, against the LSB-first Offset-Binary-Coding
+// variant (rtl/da_matvec_mult_obc.sv), whose ROM address is 3 bits wide
+// (8 entries) instead of 4. Everything else -- the DPI golden model, every
+// directed/exhaustive/random category, the protocol monitor -- applies
+// identically, since the variant keeps the same ports, handshake and
+// internal signal names.
+`ifdef DUT_OBC
+    `define DUT_MODULE da_matvec_mult_obc
+    `define NUM_ADDR   8
+`else
+    `define DUT_MODULE da_matvec_mult
+    `define NUM_ADDR   16
+`endif
+
 import "DPI-C" function void golden_matvec(
     input  byte x0,
     input  byte x1,
@@ -73,7 +89,7 @@ module da_matvec_tb;
     logic                 done;
     logic signed [YW-1:0] y0, y1, y2, y3;
 
-    da_matvec_mult #(
+    `DUT_MODULE #(
         .N  (4),
         .XW (XW),
         .YW (YW),
@@ -110,11 +126,12 @@ module da_matvec_tb;
     // Cycle-path coverage: cycle_seen[0] is the sign/subtract cycle,
     // cycle_seen[1..7] are the shift-add cycles. sub_seen tracks whether
     // both control paths (sub=1, sub=0) of the shared adder/subtractor
-    // were exercised. addr_seen tracks all 16 possible 4-bit DA ROM
-    // addresses (one bit per input) actually presented to the ROMs.
+    // were exercised. addr_seen tracks every possible DA ROM address
+    // (16 for the original, 8 for the OBC variant) actually presented to
+    // the ROMs.
     bit cycle_seen[8];
     bit sub_seen[2];
-    bit addr_seen[16];
+    bit addr_seen[`NUM_ADDR];
 
     // Race-free coverage sampling: values are stable well before the next
     // posedge, so sampling on negedge cleanly observes the control signals
@@ -514,7 +531,7 @@ module da_matvec_tb;
         fail_count  = 0;
         for (int i = 0; i < 8; i++) cycle_seen[i] = 1'b0;
         for (int i = 0; i < 2; i++) sub_seen[i] = 1'b0;
-        for (int i = 0; i < 16; i++) addr_seen[i] = 1'b0;
+        for (int i = 0; i < `NUM_ADDR; i++) addr_seen[i] = 1'b0;
         repeat (3) @(negedge clk);
         rst_n = 1'b1;
         @(negedge clk);
@@ -684,15 +701,15 @@ module da_matvec_tb;
             for (int i = 0; i < 8; i++) begin
                 if (!cycle_seen[i]) cyc_ok = 1'b0;
             end
-            for (int i = 0; i < 16; i++) begin
+            for (int i = 0; i < `NUM_ADDR; i++) begin
                 if (addr_seen[i]) addr_hit_count++;
                 else addr_ok = 1'b0;
             end
             $display(" Cycle/address coverage");
             $display("   all 8 shift cycles exercised   : %s", cyc_ok ? "YES" : "NO");
-            $display("   sub=1 (cycle 0) exercised       : %s", sub_seen[1] ? "YES" : "NO");
-            $display("   sub=0 (cycles 1-7) exercised    : %s", sub_seen[0] ? "YES" : "NO");
-            $display("   DA ROM addresses exercised      : %0d/16", addr_hit_count);
+            $display("   sub=1 (subtract) path exercised : %s", sub_seen[1] ? "YES" : "NO");
+            $display("   sub=0 (add) path exercised      : %s", sub_seen[0] ? "YES" : "NO");
+            $display("   DA ROM addresses exercised      : %0d/%0d", addr_hit_count, `NUM_ADDR);
             $display("========================================");
             if (!cyc_ok || !sub_ok || !addr_ok) begin
                 fail_count++;

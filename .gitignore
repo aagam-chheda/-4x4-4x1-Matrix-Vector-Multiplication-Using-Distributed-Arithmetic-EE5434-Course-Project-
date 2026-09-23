@@ -4,6 +4,11 @@ sim/verilator/obj_dir_cov/
 sim/verilator/cov_annotate/
 sim/verilator/coverage.dat
 demo/obj_dir/
+sim/verilator/obj_dir_obc/
+sim/verilator/obj_dir_equiv/
+synth/reports/
+synth/reports_*.log
+synth/.Xil/
 *.vcd
 *.fst
 *.fst.hier

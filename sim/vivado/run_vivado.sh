@@ -44,16 +44,44 @@ cd "$(dirname "$0")"
 
 rm -rf xsim.dir .Xil golden_model.a golden_model.so *.jou *.log *.wdb *.pb 2>/dev/null || true
 
-echo "== Compiling DPI-C golden model with xsc =="
-xsc ../../dpi/golden_model.c -o golden_model
+# MODE selects what to run. The default (orig) is exactly the flow that was
+# confirmed on a real Vivado install (via run_vivado.bat); the other two are
+# additions that have not been run on Vivado yet.
+#   MODE=orig  (default) main regression against the original da_matvec_mult
+#   MODE=obc   the same regression against the LSB-first OBC variant
+#              (rtl/da_matvec_mult_obc.sv), selected via the DUT_OBC macro
+#   MODE=equiv lockstep equivalence testbench (original + OBC side by side
+#              over several matrices; no DPI golden model needed)
+# Example:  MODE=obc ./run_vivado.sh        or   MODE=equiv ./run_vivado.sh 1234
+MODE="${MODE:-orig}"
+FILELIST=filelist.f
+TOP=da_matvec_tb
+DEFS=""
+USE_DPI=1
+case "$MODE" in
+    orig)  ;;
+    obc)   FILELIST=filelist_obc.f; DEFS="-d DUT_OBC" ;;
+    equiv) FILELIST=filelist_equiv.f; TOP=da_matvec_equiv_tb; USE_DPI=0 ;;
+    *)     echo "Unknown MODE=$MODE (use orig, obc or equiv)"; exit 2 ;;
+esac
+echo "== MODE=$MODE (top=$TOP, filelist=$FILELIST) =="
+
+SVLIB=""
+if [ "$USE_DPI" = "1" ]; then
+    echo "== Compiling DPI-C golden model with xsc =="
+    xsc ../../dpi/golden_model.c -o golden_model
+    SVLIB="-sv_lib golden_model"
+fi
 
 echo "== Compiling SystemVerilog sources with xvlog =="
 # -i points xvlog's `include search path at common/matrix_a.inc (the
 # single source of truth for matrix A, shared with the DPI-C golden model).
-xvlog --sv -i ../../common -f filelist.f
+# DEFS and SVLIB are deliberately unquoted so an empty value disappears
+# from the command line.
+xvlog --sv $DEFS -i ../../common -f "$FILELIST"
 
-echo "== Elaborating with xelab (linking DPI-C shared lib) =="
-xelab da_matvec_tb -sv_lib golden_model -s da_matvec_tb_sim
+echo "== Elaborating with xelab (linking DPI-C shared lib when used) =="
+xelab "$TOP" $SVLIB -s da_matvec_tb_sim
 
 echo "== Running with xsim (batch mode) =="
 if [ -n "${1:-}" ]; then

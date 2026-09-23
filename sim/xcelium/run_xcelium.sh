@@ -35,17 +35,42 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# MODE selects what to run. The default (orig) is exactly the flow that was
+# confirmed on a real Xcelium install; the other two are additions that
+# have not been run on Xcelium yet.
+#   MODE=orig  (default) main regression against the original da_matvec_mult
+#   MODE=obc   the same regression against the LSB-first OBC variant
+#              (rtl/da_matvec_mult_obc.sv), selected via the DUT_OBC macro
+#   MODE=equiv lockstep equivalence testbench (original + OBC side by side
+#              over several matrices; no DPI golden model needed)
+# Example:  MODE=obc ./run_xcelium.sh
+MODE="${MODE:-orig}"
+FILELIST=filelist.f
+TOP=da_matvec_tb
+DEFS=""
+DPI_SRC="../../dpi/golden_model.c"
+case "$MODE" in
+    orig)  ;;
+    obc)   FILELIST=filelist_obc.f; DEFS="-define DUT_OBC" ;;
+    equiv) FILELIST=filelist_equiv.f; TOP=da_matvec_equiv_tb; DPI_SRC="" ;;
+    *)     echo "Unknown MODE=$MODE (use orig, obc or equiv)"; exit 2 ;;
+esac
+echo "== MODE=$MODE (top=$TOP, filelist=$FILELIST) =="
+
 WORK_DIR=xcelium_work
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
 
+# DEFS and DPI_SRC are deliberately unquoted so an empty value disappears
+# from the command line (no spaces in any of these paths).
 xrun \
     -sv \
     -access +rwc \
-    -top da_matvec_tb \
+    -top "$TOP" \
+    $DEFS \
     -incdir ../../common \
-    -f filelist.f \
-    ../../dpi/golden_model.c \
+    -f "$FILELIST" \
+    $DPI_SRC \
     -xmlibdirname "$WORK_DIR/xcelium.d" \
     -l "$WORK_DIR/xrun.log" \
     "$@" || true
